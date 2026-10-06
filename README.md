@@ -28,7 +28,7 @@ repository (MIT) and is not copied here. JDK 25 runs the build; Gradle provision
 Inside ModdedBench, where this repository is the submodule `mods/baritone`:
 
 ```bash
-git clone --recurse-submodules <ModdedBench>
+git clone --recurse-submodules https://github.com/JohnHeibel/ModdedBench.git && cd ModdedBench
 ./gradlew :baritone:build
 ```
 
