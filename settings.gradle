@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: LGPL-3.0-or-later
+// Copyright (c) 2026 ModdedBench contributors
+//
+// Read only when Modatone is built by itself. Inside a ModdedBench checkout this directory is
+// mods/baritone, ModdedBench's own settings.gradle includes it as the :baritone project, and this
+// file is ignored.
+pluginManagement {
+    repositories {
+        maven { url = 'https://nexus.gtnewhorizons.com/repository/public/' }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+    plugins {
+        id 'com.gtnewhorizons.retrofuturagradle' version '2.0.2'
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '1.0.0'
+}
+
+rootProject.name = 'modatone'
+
+// The one thing Modatone compiles against that it does not hold: ModdedBench's api module
+// (dev.modbench.api, MIT). Name a ModdedBench checkout's mods/api; as its submodule, ../api is found.
+def marker = 'src/main/java/dev/modbench/api'
+def api = providers.gradleProperty('modbenchApi').orNull ?: (new File(rootDir, "../api/$marker").isDirectory() ? '../api' : null)
+if (api == null || !new File(file(api), marker).isDirectory()) {
+    throw new GradleException("Modatone compiles against ModdedBench's api module (dev.modbench.api)" +
+        (api == null ? ', and none was named' : ", and ${file(api)} is not one") + '.\n' +
+        'Pass the path of mods/api in a ModdedBench checkout:\n' +
+        '    ./gradlew build -PmodbenchApi=/path/to/ModdedBench/mods/api\n' +
+        'or build from ModdedBench itself, where this repository is the submodule mods/baritone:\n' +
+        '    ./gradlew :baritone:build')
+}
+include 'api'
+project(':api').projectDir = file(api)
