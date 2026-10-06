@@ -82,11 +82,13 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     public java.util.function.BiPredicate<IBlockState,IBlockState> stateComparison;
     public java.util.function.BiFunction<BlockPos,Goal,Goal> placementGoalAdapter=(pos,goal)->goal;
     public java.util.function.BiFunction<BlockPos,Goal,Goal> breakGoalAdapter=(pos,goal)->goal;
+    /** Asked where the six face centres and the centre of a block to break are all out of view: another aim at it, if the job knows one. */
+    public java.util.function.Function<BlockPos,Optional<Rotation>> breakAim=pos->Optional.empty();
     public java.util.function.Supplier<Goal> accessGoal=()->null;
     /** Cells above the feet that are placed although nothing is over them. */
     public java.util.function.Predicate<BlockPos> placeFromBelow=pos->false;
     public java.util.function.BiPredicate<IBlockState,IBlockState> approximateMaterialMatches;
-    public void resetAdapters(){stateValidator=(current,desired,itemVerify)->true;beforePlace=pos->{};mayBreak=pos->true;mayPlace=pos->true;movementMayPlace=pos->true;stateComparison=null;placementGoalAdapter=(p,g)->g;breakGoalAdapter=(p,g)->g;accessGoal=()->null;placeFromBelow=pos->false;approximateMaterialMatches=null;}
+    public void resetAdapters(){stateValidator=(current,desired,itemVerify)->true;beforePlace=pos->{};mayBreak=pos->true;mayPlace=pos->true;movementMayPlace=pos->true;stateComparison=null;placementGoalAdapter=(p,g)->g;breakGoalAdapter=(p,g)->g;accessGoal=()->null;breakAim=pos->Optional.empty();placeFromBelow=pos->false;approximateMaterialMatches=null;}
     public int repeats(){return numRepeats;}
     public Vec3i origin(){return origin;}
     public Set<BetterBlockPos> incorrectPositions(){return incorrectPositions==null?Set.of():Set.copyOf(incorrectPositions);}
@@ -248,6 +250,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                         BetterBlockPos pos = new BetterBlockPos(x, y, z);
                         if (!mayBreak.test(pos)) continue;
                         Optional<Rotation> rot = RotationUtils.reachable(ctx, pos, ctx.playerController().getBlockReachDistance());
+                        if (!rot.isPresent()) rot = breakAim.apply(pos);
                         if (rot.isPresent()) {
                             return Optional.of(new Tuple<>(pos, rot.get()));
                         }
@@ -332,7 +335,10 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         for (EnumFacing against : EnumFacing.values()) {
             BetterBlockPos placeAgainstPos = new BetterBlockPos(x, y, z).offset(against);
             IBlockState placeAgainstState = bsi.get0(placeAgainstPos);
-            if (MovementHelper.isReplaceable(placeAgainstPos.x, placeAgainstPos.y, placeAgainstPos.z, placeAgainstState, bsi)) {
+            // The game decides where a click lands: on a block it calls replaceable (whatever its material) the new block takes that
+            // block's own cell, not the one beside it, so it is no face to place this cell against.
+            if (MovementHelper.isReplaceable(placeAgainstPos.x, placeAgainstPos.y, placeAgainstPos.z, placeAgainstState, bsi)
+                    || LegacyPlacement.empty(ctx.world().nativeWorld, placeAgainstPos.x, placeAgainstPos.y, placeAgainstPos.z)) {
                 continue;
             }
             AxisAlignedBB aabb = placeAgainstState.getBoundingBox(ctx.world(), placeAgainstPos);

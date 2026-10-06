@@ -335,6 +335,7 @@ final class ReferenceConstructionProcess extends BulkJob {
             if(!fromOutside.contains(cell.pos())&&!placementGoals.turn(cell))return placementGoals.last(cell,goal);
             long began=System.nanoTime();try{return placementGoal(cell,slot,goal,currentFeet);}finally{placementGoals.spent(System.nanoTime()-began);}
         };
+        builder.breakAim=target->{BlockPos p=new BlockPos(target.getX(),target.getY(),target.getZ());return breakViews.containsKey(p)?fine(p):Optional.empty();};
         builder.breakGoalAdapter=(target,goal)->{
             BlockPos p=new BlockPos(target.getX(),target.getY(),target.getZ());
             Goal made=breakGoals.fresh(p);if(made!=null)return made;
@@ -346,7 +347,7 @@ final class ReferenceConstructionProcess extends BulkJob {
                 // Near, only a pose from which the block is in view is an arrival: beside or under it with something in the
                 // way is where a job waits for ever. Here the source builder's own test decides, as it will at the click. No pose: upstream's goal stands.
                 Goal[] seen=breakViews.computeIfAbsent(p,k->views(p,stands.around(p),VIEWS)).stream()
-                    .filter(pose->!pose.feet().equals(currentFeet)||baritone.api.utils.RotationUtils.reachable(engine.getPlayerContext(),new baritone.api.utils.BetterBlockPos(p.getX(),p.getY(),p.getZ()),mc.playerController.getBlockReachDistance()).isPresent()).map(pose->(Goal)new GoalBlock(pose.feet())).toArray(Goal[]::new);
+                    .filter(pose->!pose.feet().equals(currentFeet)||aim(p).isPresent()).map(pose->(Goal)new GoalBlock(pose.feet())).toArray(Goal[]::new);
                 made=seen.length==0?goal:new GoalComposite(seen);breakGoals.spent(System.nanoTime()-began);
             }
             breakGoals.put(p,made);return made;
@@ -441,6 +442,21 @@ final class ReferenceConstructionProcess extends BulkJob {
         }
         return out;
     }
+    /** The source builder's aim at this block from where the player is, else one of the finer points its view was proved with. */
+    private Optional<baritone.api.utils.Rotation> aim(BlockPos p){
+        var found=baritone.api.utils.RotationUtils.reachable(engine.getPlayerContext(),new baritone.api.utils.BetterBlockPos(p.getX(),p.getY(),p.getZ()),mc.playerController.getBlockReachDistance());
+        return found.isPresent()?found:fine(p);
+    }
+    /** The source builder tries a block's centre and face centres; views() promises on MiningJob's points, which reach a block whose
+     *  centre is hidden or whose box is small. These are those points, each judged as the source judges its own: by the quantized aim. */
+    private Optional<baritone.api.utils.Rotation> fine(BlockPos p){
+        var at=new baritone.api.utils.BetterBlockPos(p.getX(),p.getY(),p.getZ());
+        for(double y:new double[]{.95,.5,.05})for(double x:new double[]{.5,.15,.85})for(double z:new double[]{.5,.15,.85}){
+            var found=baritone.api.utils.RotationUtils.reachableOffset(engine.getPlayerContext(),at,new baritone.compat.Vec3d(p.getX()+x,p.getY()+y,p.getZ()+z),mc.playerController.getBlockReachDistance(),false);
+            if(found.isPresent())return found;
+        }
+        return Optional.empty();
+    }
     /** Whether the player's body is in this cell. */
     private boolean inside(BlockPos at){
         return mc.thePlayer.boundingBox.intersectsWith(net.minecraft.util.AxisAlignedBB.getBoundingBox(at.getX(),at.getY(),at.getZ(),at.getX()+1,at.getY()+1,at.getZ()+1));
@@ -534,6 +550,28 @@ final class ReferenceConstructionProcess extends BulkJob {
             lease.look((float)Math.toDegrees(Math.atan2(-dx,dz)),mc.thePlayer.rotationPitch);
             lease.setKeys(Set.of(mc.gameSettings.keyBindSneak.getKeyCode(),mc.gameSettings.keyBindForward.getKeyCode()));
             placementGoals.age();state="positioning";return true;
+        }
+        return false;
+    }
+    /**
+     * The same for a block to remove. Its view was proved from the centre of a cell and a walk ends at that cell's edge, where
+     * the source builder's test can fail: the break goal then names the next such cell, and from its edge this one, back and
+     * forth with nothing broken. So the player first steps to the centre it was promised from; a pose still blind there is none.
+     */
+    private boolean centerForBreak(){
+        if(breakViews.isEmpty()||!mc.thePlayer.onGround||!pending.isEmpty()||leave!=null)return false;
+        var feet=engine.getPlayerContext().playerFeet();BlockPos at=new BlockPos(feet.getX(),feet.getY(),feet.getZ());
+        double y=mc.thePlayer.boundingBox.minY,x=at.getX()+.5,z=at.getZ()+.5,dx=x-mc.thePlayer.posX,dz=z-mc.thePlayer.posZ;
+        for(var e:breakViews.entrySet()){
+            BlockPos p=e.getKey();
+            if(!Boolean.FALSE.equals(correct.get(p))||baritone.compat.LegacyPlacement.empty(world,p.getX(),p.getY(),p.getZ())||e.getValue().stream().noneMatch(pose->pose.feet().equals(at)))continue;
+            if(aim(p).isPresent())continue;
+            if(dx*dx+dz*dz<.01||!ForgeSnapshot.liveStandable(world,feet)||!ForgeSnapshot.liveClear(world,x,y,z,y+1.8)){e.getValue().removeIf(pose->pose.feet().equals(at));breakGoals.age();continue;}
+            engine.getPathingBehavior().cancelSegmentIfSafe();
+            engine.getInputOverrideHandler().clearAllKeys();engine.getInputOverrideHandler().flush();
+            lease.look((float)Math.toDegrees(Math.atan2(-dx,dz)),mc.thePlayer.rotationPitch);
+            lease.setKeys(Set.of(mc.gameSettings.keyBindSneak.getKeyCode(),mc.gameSettings.keyBindForward.getKeyCode()));
+            breakGoals.age();state="positioning";return true;
         }
         return false;
     }
@@ -691,7 +729,7 @@ final class ReferenceConstructionProcess extends BulkJob {
             if(blamed==null){blamed=next();finish("paused","stalled");return;}
             shortOf(blamed);return;
         }
-        if(centerForPlacement())return;
+        if(centerForPlacement()||centerForBreak())return;
         engine.tickStart();
         // Placement callbacks may finish and release this job during the source tick.
         if(done()||closing())return;
