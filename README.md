@@ -15,6 +15,7 @@ Modatone is not affiliated with or endorsed by the Baritone project. Do not repo
 | `UPSTREAM_SOURCES.json` | every upstream file, its original path and the SHA-256 of the original |
 | `src/main/java/baritone/gtnh` | the port: Forge 1.7.10 terrain and movement adapters, jobs (walk, mine, build), GTNH specifics |
 | `src/test` | JUnit tests, no game needed |
+| `docs/` | [BARITONE_PORT](docs/BARITONE_PORT.md): what is ported, what is not, and the mining, construction and schematic contracts; [MOVEMENTS](docs/MOVEMENTS.md): how to add a kind of movement |
 
 Modatone talks to the rest of ModdedBench only through `dev.modbench.api` (it registers itself with
 `NavigationRegistry`); nothing in ModdedBench imports a Baritone class.
@@ -27,7 +28,7 @@ repository (MIT) and is not copied here. JDK 25 runs the build; Gradle provision
 Inside ModdedBench, where this repository is the submodule `mods/baritone`:
 
 ```bash
-git clone --recurse-submodules <ModdedBench>
+git clone --recurse-submodules https://github.com/JohnHeibel/ModdedBench.git && cd ModdedBench
 ./gradlew :baritone:build
 ```
 
