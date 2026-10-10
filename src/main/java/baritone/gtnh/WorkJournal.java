@@ -17,7 +17,8 @@ import static baritone.gtnh.pathing.WorkSpec.*;
  * A checkpoint is turned into bytes on the thread that saves (the game's) and written and synced by one writer thread,
  * in the order saved. A save that finds an unwritten one of its journal replaces it (the rows to append are joined), so
  * a crash loses at most what the last save handed over. flush() returns when everything saved is on disk: a job's end,
- * every read of a journal and the game's shutdown wait for it.
+ * every read of a journal and the game's shutdown wait for it. So does commit(), for the two rows that are a promise
+ * about the next act: a block about to be taken out for access, a use about to be pressed.
  */
 final class WorkJournal {
     static final Gson JSON=new Gson();
@@ -117,7 +118,12 @@ final class WorkJournal {
     /** A write that failed since the last save says so here: in the next save, and in the close that ends the job. */
     private void failed(){Exception error=failure;if(error!=null){failure=null;throw new IllegalStateException("cannot checkpoint work: "+error.getMessage(),error);}}
     /** The save that ends a job: on disk when this returns, or thrown. */
-    void close(Map<String,Object> receipt){save(receipt);flush();failed();}
+    void close(Map<String,Object> receipt){commit(receipt);}
+    /**
+     * A save that is on disk when this returns, or thrown: for what must be there before the act it is about. The game
+     * thread waits for one write and sync, so it is for single rows, never the periodic checkpoint.
+     */
+    void commit(Map<String,Object> receipt){save(receipt);flush();failed();}
     /** No disk here: the checkpoint as bytes, handed to the writer. */
     void save(Map<String,Object> receipt) {
         failed();

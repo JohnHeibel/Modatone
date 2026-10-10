@@ -84,6 +84,25 @@ public class WorkJournalTest {
         WorkJournal other=fresh();var release=hold();journal.save(receipt("running",52));other.save(receipt("running",1));release.countDown();WorkJournal.flush();
         assertEquals(52.0,n(file),0);assertEquals(1.0,n(directory.resolve("work").resolve(other.id+".json")),0);
     }
+    /** ClickRun commits its "restore" row before the first hit and its "taking" mark before the key goes down. */
+    @Test public void aCommittedRowIsOnDiskBeforeTheActItIsAboutAndASavedOneNeedNotBe()throws Exception{
+        WorkJournal journal=fresh();Path file=directory.resolve("work").resolve(journal.id+".json");
+        journal.commit(receipt("running",1));
+        var release=hold();
+        journal.progress.put("restore",List.of(Map.of("pos",List.of(1,64,1),"id","minecraft:stone","meta",0)));
+        journal.save(receipt("running",2));
+        assertEquals("a save returns with the row still in memory: a crash here loses it",1.0,n(file),0);
+        journal.progress.put("clicks",Map.of("use:lever","taking"));
+        var returned=new java.util.concurrent.CountDownLatch(1);var acted=new java.util.concurrent.atomic.AtomicReference<String>();
+        Thread game=new Thread(()->{journal.commit(receipt("running",3));try{acted.set(Files.readString(file));}catch(Exception e){acted.set(e.toString());}returned.countDown();});game.start();
+        assertFalse("commit does not return while the writer has not written",returned.await(300,java.util.concurrent.TimeUnit.MILLISECONDS));
+        release.countDown();assertTrue(returned.await(10,java.util.concurrent.TimeUnit.SECONDS));
+        // What the next line of the caller (the hit, the key press) would find on disk, with no flush by anyone else.
+        assertTrue(acted.get(),acted.get().contains("\"use:lever\":\"taking\"")&&acted.get().contains("minecraft:stone")&&acted.get().contains("\"n\":3"));
+        // A write that failed is the commit's to report, before the act.
+        WorkJournal blocked=new WorkJournal(UUID.randomUUID().toString(),"build","test",new LinkedHashMap<>(),file.resolve("under-a-file").resolve("x.json"));
+        try{blocked.commit(receipt("running",1));fail("the act would have gone ahead unjournaled");}catch(IllegalStateException expected){assertTrue(expected.getMessage().startsWith("cannot checkpoint work"));}
+    }
     @Test public void aWriteThatFailedIsThrownByTheNextSaveAndByClose()throws Exception{
         Files.writeString(directory.resolve("work"),"a file where the directory belongs");
         WorkJournal journal=fresh();journal.save(receipt("running",1));WorkJournal.flush();

@@ -373,12 +373,12 @@ final class ClickRun {
             task.before=state(task.pos());
             if(task.breaking()) {
                 // Journaled before the first hit, so whatever ends this session the next puts it back.
-                if(task.parent!=null&&task.row==null){task.row=new LinkedHashMap<>();task.row.put("pos",point(task.block));task.row.put("id",task.before.get("id"));task.row.put("meta",task.before.get("meta"));task.row.put("for",task.parent.label());restores.add(task.row);save();}
+                if(task.parent!=null&&task.row==null){task.row=new LinkedHashMap<>();task.row.put("pos",point(task.block));task.row.put("id",task.before.get("id"));task.row.put("meta",task.before.get("meta"));task.row.put("for",task.parent.label());restores.add(task.row);commit();}
                 if(task.parent!=null&&task.around==null){task.around=new LinkedHashMap<>();for(int f=0;f<6;f++){BlockPos n=ClickSpec.offset(task.block,f);if(!replaceable(n))task.around.put(n,state(n));}}
                 space=null;enter("break");job.lease.setKeys(Set.of());return;
             }
             // A use is journaled as being taken before the key goes down: a session that ends here never presses it twice.
-            if(task.kind.equals("step")&&!s.place()){log.record(s.key(),ClickLog.TAKING);save();}
+            if(task.kind.equals("step")&&!s.place()){log.record(s.key(),ClickLog.TAKING);commit();}
             pressed=s;pressTick=job.ticks;
             Set<Integer> press=new HashSet<>(keys);press.add(mc.gameSettings.keyBindUseItem.getKeyCode());job.lease.setKeys(press);
             task.pressTick=job.ticks;enter("click");return;
@@ -548,6 +548,8 @@ final class ClickRun {
         saved.put("scaffold",scaffold.entrySet().stream().map(e->List.<Object>of(e.getKey().getX(),e.getKey().getY(),e.getKey().getZ(),e.getValue())).toList());
     }
     private void save(){job.journal.save(job.status());}
+    /** On disk before the next line runs: the row a later session relies on if this one ends in the act. */
+    private void commit(){job.journal.commit(job.status());}
 
     /**
      * A screen the job does not own opened. True when a click of this job opened it: the screen is closed, a use is

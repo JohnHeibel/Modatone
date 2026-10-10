@@ -259,7 +259,10 @@ A checkpoint (every 20 ticks of a build, and at each change of phase) is
 made into bytes on the game thread and written and synced by one writer
 thread, in order; a newer one replaces one not yet written. A crash can lose
 the last checkpoint handed over. The save that ends a job, any read of a
-journal and the game's shutdown wait for the writer.
+journal and the game's shutdown wait for the writer. So do the two rows that
+are a promise about the next act, which are on disk before it: the `restore`
+row of a block taken out for access (before the first hit) and the `taking`
+mark of a use (before the key goes down).
 
 ## Schematic import and copy
 
