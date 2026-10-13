@@ -494,7 +494,8 @@ public final class MineProcess extends BaritoneProcessHelper implements IMinePro
         // ModdedBench: a drop is picked up, not broken: where it lies (the water that filled a dug cell, say) says nothing
         if (dropped.contains(pos) && !filter.has(ctx.get(pos.getX(), pos.getY(), pos.getZ()))) return blacklist.contains(pos) ? "unreachable" : null;
         // remove any that are implausible to mine (encased in bedrock, or touching lava)
-        String implausible = implausible(ctx, pos);
+        // ModdedBench: a block to walk to is not broken: a portal, or a furnace with no pickaxe in the inventory, is still a place to go
+        String implausible = ctx instanceof GetToBlockProcess.GetToBlockCalculationContext ? null : implausible(ctx, pos);
         if (implausible != null) return implausible;
         if (Baritone.settings().allowOnlyExposedOres.value && !isNextToAir(ctx, pos)) return "not_exposed:allowOnlyExposedOres";
         if (pos.getY() < Baritone.settings().minYLevelWhileMining.value) return "below_minYLevelWhileMining";
