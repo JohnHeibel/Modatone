@@ -75,7 +75,7 @@ final class FightJob implements Navigation.Job {
     private Integer meleeSlot;
     private float lastHealth=-1;
     private double minRange=6,maxRange=20,speed=3,gravity=.05,drag=.99;
-    private int drawTicks=20,reloadTicks=5,shotPhase,phaseTicks,shots,hits,duds,watchUntil=-1,stalled,blind,weaponSlot;
+    private int drawTicks=20,reloadTicks=5,shotPhase,phaseTicks,shots,hits,duds,watchUntil=-1,stalled,blind,weaponSlot,launcherSlot=-1,armTick=-1000;
     private boolean clickAfterLoad,shotCounted;
     private String weaponKey="",loaded="";
     private double nearestSeen=Double.MAX_VALUE;
@@ -117,7 +117,7 @@ final class FightJob implements Navigation.Job {
         ranged=params.containsKey("ranged");
         if(ranged){
             var held=me.getHeldItem();if(held==null)throw new IllegalArgumentException("ranged fight needs the weapon in hand: pass weaponSlot");
-            weaponKey=net.minecraft.item.Item.itemRegistry.getNameForObject(held.getItem())+"|"+held.getDisplayName();
+            weaponKey=net.minecraft.item.Item.itemRegistry.getNameForObject(held.getItem())+"|"+held.getDisplayName();launcherSlot=me.inventory.currentItem;
             var asked=child(params,"ranged");
             speed=number(asked,"speed",3,.1,20);gravity=number(asked,"gravity",.05,0,1);drag=number(asked,"drag",.99,.5,1);
             drawTicks=integer(asked,"drawTicks",20,1,200);reloadTicks=integer(asked,"reloadTicks",5,0,400);clickAfterLoad=bool(asked,"clickAfterLoad",false);
@@ -158,14 +158,19 @@ final class FightJob implements Navigation.Job {
             &&fell.stream().anyMatch(f->e.getDistance(f[0],f[1],f[2])<=3))present.add(e.getEntityId());
         long arrived=hostiles(8).stream().filter(e->!present.contains(e.getEntityId())).count();
         if(arrived>maxGrowth){finish("failed","swarm_growing: "+arrived+" hostiles within 8 blocks that were not within 32 when the fight began, after "+kills+" kills");return;}
-        List<Entity> near=hostiles(4);
-        if(!swarm&&attackersSet&&near.size()>maxAttackers){finish("failed","outnumbered: "+near.size()+" entities of the hostile rule within 4 blocks, max_attackers "+maxAttackers);return;}
+        long atOnce=atOnce(hostiles(4));
+        if(!swarm&&attackersSet&&atOnce>maxAttackers){finish("failed","outnumbered: "+atOnce+" hostiles within 4 blocks that could be at you at once (one queued behind a nearer one is not), max_attackers "+maxAttackers);return;}
         if(ticks%10==0)for(Entity e:matching(x->monster.test(x)||hostile.test(x),12)){ // each one's distance over the last second and a half
             double d=e.getDistanceToEntity(me);double[] g=gaps.computeIfAbsent(e.getEntityId(),k->new double[]{d,d,d,d});
             System.arraycopy(g,1,g,0,3);g[3]=d;if(g[0]-d>=1.5)cameAt.add(e.getEntityId());
             if(g[2]-d>=.5)closing.add(e.getEntityId());else closing.remove(e.getEntityId());
         }
 
+        // Standing in what burns (the game's own test: fire or lava in the box, or a block a mod says is burning), a step
+        // out of it comes first, to the nearest side with somewhere to stand that does not burn. A drawn weapon stays drawn.
+        if(me.onGround&&burns(me.boundingBox)){Float out=outOfFire();
+            if(out!=null){phase="out_of_fire";me.rotationYaw=out;var game=mc.gameSettings;Set<Integer> keys=new LinkedHashSet<>(List.of(game.keyBindForward.getKeyCode()));
+                if(drawn())keys.add(game.keyBindUseItem.getKeyCode());rest(keys);return;}}
         if(shotPhase==4){lower();return;}
         if(target!=null&&dead(target)&&drawn()){shotPhase=4;phaseTicks=0;lower();return;}
         if(target!=null&&dead(target)){
@@ -205,12 +210,16 @@ final class FightJob implements Navigation.Job {
             finish("failed",where==null?"cannot_reach_target":"cannot_reach_target: "+where);return;
         }
 
-        if(ranged&&shotPhase!=1&&shotPhase!=2&&!hostiles(3.5).isEmpty()){ // a mob walks faster than a player backs away: a launcher is no use at arm's length
+        // A mob walks faster than a player backs away: a launcher is no use at arm's length. One in sight within 3.5 blocks
+        // is met with the melee weapon (one behind a wall is not at you yet), and a second after none is the launcher is back.
+        List<Entity> atArm=hostiles(3.5).stream().filter(me::canEntityBeSeen).toList();if(!atArm.isEmpty())armTick=ticks;
+        if(ranged&&shotPhase!=1&&shotPhase!=2&&!atArm.isEmpty()){
             if(meleeSlot==null){finish("failed","hostile_in_melee_range: the ranged fight is over, "+shots+" shots; fight on with a melee weapon (or pass ranged.meleeSlot) or leave");return;}
             boolean drawn=drawn();ranged=false;me.inventory.currentItem=meleeSlot;mc.playerController.updateController();
-            if(chosen==null||reach(target)>REACH)target=hostiles(3.5).get(0);
+            if(chosen==null||reach(target)>REACH)target=atArm.get(0);
             rest(drawn?Set.of(mc.gameSettings.keyBindUseItem.getKeyCode()):Set.of());if(drawn)return;
         }
+        if(!ranged&&launcherSlot>=0&&ticks-armTick>=20){ranged=true;shotPhase=0;phaseTicks=0;me.inventory.currentItem=launcherSlot;mc.playerController.updateController();}
         if(ranged){rangedTick(target);return;}
         Entity body=nearest(target);double far=boxReach(body);
         boolean inReach=far<=REACH&&touchable(body);
@@ -275,7 +284,7 @@ final class FightJob implements Navigation.Job {
         rest(keys);
     }
     private void strike(Entity body,boolean falling){
-        mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
+        mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());passedUntil.remove(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
     }
     /** The engine does not tick here, so its keys and any block it was breaking are let go and ours are published. */
     private void rest(Set<Integer> keys){
@@ -341,15 +350,15 @@ final class FightJob implements Navigation.Job {
     }
     /**
      * A swarm's target, each tick: the one it is hitting while that is in reach (one finished before the next), else the
-     * nearest in reach, else the one it is going to while no other is two blocks nearer, else the nearest of the pack;
-     * never one it has passed over.
+     * nearest in reach (one passed over too), else the one it is going to while no other is two blocks nearer, else the
+     * nearest of the pack it has not passed over.
      */
     private Entity swarmTarget(Entity current){
         var me=mc.thePlayer;
         // One of a kind kept away from, within 6 blocks, first: met at arm's length before it is beside you.
         Entity kept=pack().stream().filter(e->!passed(e)&&keepAway.test(e)&&e.getDistanceToEntity(me)<=6).findFirst().orElse(null);if(kept!=null)return kept;
         if(current!=null&&!dead(current)&&!passed(current)&&hostile.test(current)&&reach(current)<=REACH)return current;
-        Entity inReach=hostiles(REACH+2).stream().filter(e->!passed(e)&&reach(e)<=REACH).findFirst().orElse(null);
+        Entity inReach=hostiles(REACH+2).stream().filter(e->reach(e)<=REACH).findFirst().orElse(null); // one passed over that has come into reach is reachable after all
         if(inReach!=null)return inReach;
         List<Entity> all=pack().stream().filter(e->!passed(e)).toList();if(all.isEmpty())return null;
         if(current!=null&&!dead(current)&&all.contains(current)&&current.getDistanceToEntity(me)<all.get(0).getDistanceToEntity(me)+2)return current;
@@ -459,11 +468,12 @@ final class FightJob implements Navigation.Job {
         float health=t instanceof EntityLivingBase l?l.getHealth():-1;
         if(lastHealth>=0&&health>=0&&health<lastHealth&&shots>0)hits++;
         lastHealth=health;
-        double distance=me.getDistanceToEntity(t);boolean sight=me.canEntityBeSeen(t);
+        // In sight is seen, and the arc the shot would fly clear of blocks: a mob seen over the lip of cover is not one to shoot into it.
+        double distance=me.getDistanceToEntity(t);boolean seen=me.canEntityBeSeen(t),sight=seen&&aimBallistic(t);String unseen=seen?"no_clear_shot":"no_line_of_sight";
         // A weapon already drawn is not dropped, which would loose it unaimed: in sight it is shot from here, whatever the
         // range; out of sight it is held a second for the target to show again, then let down unfired.
         if(drawn()&&!sight){
-            phase="no_line_of_sight";
+            phase=unseen;
             if(++blind<20){rest(Set.of(use));return;}
             shotPhase=4;phaseTicks=0;lower();return;
         }
@@ -475,12 +485,11 @@ final class FightJob implements Navigation.Job {
             else{phase="closing";phaseTicks=0;eyes(t,true);engine.tickStart();return;}
         }
         Set<Integer> keys=new LinkedHashSet<>();
-        if(sight)aimBallistic(t);
         if(distance<minRange&&clearBehind())keys.add(game.keyBindBack.getKeyCode());
         phaseTicks++;
         switch(shotPhase){
             case 0->{
-                if(!sight){phaseTicks=0;phase="no_line_of_sight";break;}
+                if(!sight){phaseTicks=0;phase=unseen;break;}
                 phase="drawing";keys.add(use);
                 if(phaseTicks==1){loaded=wear(me.getHeldItem());shotCounted=false;mc.playerController.sendUseItem(me,mc.theWorld,me.getHeldItem());}
                 if(phaseTicks>=drawTicks){shotPhase=1;phaseTicks=0;watchUntil=ticks+12;} // the use key is left out from the next tick on: that is the release
@@ -547,14 +556,29 @@ final class FightJob implements Navigation.Job {
         while(x<far&&t<200&&vx>.01){x+=vx;y+=vy;vx*=drag;vy=vy*drag-gravity;t++;}
         return new double[]{x<far?-1e9:y,t};
     }
-    private void aimBallistic(Entity t){
-        var me=mc.thePlayer;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
+    /** Aims at where `t` will be when the shot arrives; true if the arc it flies there is clear of blocks a shot cannot pass.
+     *  Blocked at the usual height on the mob (cover to its waist, a lip over you), a higher point on it, then a lower, is tried. */
+    private boolean aimBallistic(Entity t){
+        double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
+        for(double h:heights)if(aimAt(t,h))return true;
+        aimAt(t,heights[0]);return false;
+    }
+    private boolean aimAt(Entity t,double height){
+        var me=mc.thePlayer;var b=t.boundingBox;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
         for(int pass=0;pass<2;pass++){ // second pass leads the target by where it will be when the shot arrives
             dx=t.posX+(t.posX-t.prevPosX)*flight-ex;dz=t.posZ+(t.posZ-t.prevPosZ)*flight-ez;
-            double far=Math.sqrt(dx*dx+dz*dz),up=aimY(t,true)+(t.posY-t.prevPosY)*flight-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
+            double far=Math.sqrt(dx*dx+dz*dz),up=b.minY+(b.maxY-b.minY)*height+(t.posY-t.prevPosY)*flight-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
             for(int i=0;i<18;i++){angle=(lo+hi)/2;double[] r=fly(angle,far);flight=r[1];if(r[0]<up)lo=angle;else hi=angle;}
         }
         me.rotationYaw=(float)(Math.toDegrees(Math.atan2(dz,dx))-90);me.rotationPitch=(float)-Math.toDegrees(angle);
+        // The same arc stepped through the world, up to half a block short of the target (it is hit before what is behind it).
+        double far=Math.sqrt(dx*dx+dz*dz),ux=dx/far,uz=dz/far,x=0,y=0,vx=speed*Math.cos(angle),vy=speed*Math.sin(angle);
+        for(int i=0;i<200&&x<far-.5&&vx>.01;i++){
+            double nx=Math.min(x+vx,far-.5),ny=y+vy*(nx-x)/vx;
+            if(mc.theWorld.func_147447_a(Vec3.createVectorHelper(ex+ux*x,ey+y,ez+uz*x),Vec3.createVectorHelper(ex+ux*nx,ey+ny,ez+uz*nx),false,true,false)!=null)return false;
+            x=nx;y=ny;vx*=drag;vy=vy*drag-gravity;
+        }
+        return true;
     }
     /** One step back is somewhere to stand: floor under it, room in it, no fluid. */
     private boolean clearBehind(){return standable(mc.thePlayer.rotationYaw+180,1.3);}
@@ -563,6 +587,30 @@ final class FightJob implements Navigation.Job {
         var me=mc.thePlayer;float away=(float)(Math.toDegrees(Math.atan2(me.posZ-from.posZ,me.posX-from.posX))-90);
         for(float off:new float[]{0,35,-35,70,-70,90,-90})if(standable(away+off,1.3)&&standable(away+off,2.3))return away+off;
         return null;
+    }
+    /** The heading to the nearest place up to 4 blocks off, from straight ahead round to behind, with somewhere to stand and
+     *  nothing burning, and floor all the way there (fire may be crossed, lava not); null if none. */
+    private Float outOfFire(){
+        var me=mc.thePlayer;
+        for(int far=1;far<=4;far++)for(float off:new float[]{0,45,-45,90,-90,135,-135,180}){float yaw=me.rotationYaw+off;double r=Math.toRadians(yaw);
+            int x=(int)Math.floor(me.posX-Math.sin(r)*far),y=(int)Math.floor(me.boundingBox.minY+.01),z=(int)Math.floor(me.posZ+Math.cos(r)*far);
+            boolean way=true;for(int d=1;d<=far&&way;d++)way=standable(yaw,d);
+            if(way&&!burns(net.minecraft.util.AxisAlignedBB.getBoundingBox(x,y,z,x+1,y+2,z+1)))return yaw;}
+        return null;
+    }
+    /** How many of these could be at you at once: one queued behind a nearer one (within 30 degrees of it, seen from you)
+     *  waits its turn, as in a doorway or a corridor; a pack that spreads round you counts in full. */
+    private long atOnce(List<Entity> near){ var me=mc.thePlayer;
+        return near.stream().filter(h->near.stream().noneMatch(g->g!=h&&g.getDistanceToEntity(me)<h.getDistanceToEntity(me)
+            &&Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_double(Math.toDegrees(Math.atan2(g.posZ-me.posZ,g.posX-me.posX)-Math.atan2(h.posZ-me.posZ,h.posX-me.posX))))<30)).count(); }
+    /** What the game sets you alight by, in that box: fire or lava, or a block a mod says is burning. */
+    private boolean burns(net.minecraft.util.AxisAlignedBB b){
+        var w=mc.theWorld;
+        for(int x=(int)Math.floor(b.minX+.001);x<=(int)Math.floor(b.maxX-.001);x++)for(int y=(int)Math.floor(b.minY+.001);y<=(int)Math.floor(b.maxY-.001);y++)
+            for(int z=(int)Math.floor(b.minZ+.001);z<=(int)Math.floor(b.maxZ-.001);z++){
+                var block=w.getBlock(x,y,z);var m=block.getMaterial();
+                if(m==net.minecraft.block.material.Material.fire||m==net.minecraft.block.material.Material.lava||block.isBurning(w,x,y,z))return true;}
+        return false;
     }
     /** The cell that far ahead on that heading has a floor, room for feet and head, and no fluid. */
     private boolean standable(float yaw,double far){
@@ -588,7 +636,7 @@ final class FightJob implements Navigation.Job {
             out.put("adjustments",adjustments);out.put("shotEntities",List.copyOf(shotKinds));
             out.put("tracks",tracks.stream().map(t->t.stream().map(s->List.of(s[0],s[1])).toList()).toList());} // per shot, per tick: [horizontal speed, vertical speed]
         if(me==player){
-            out.put("health",me.getHealth());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
+            out.put("health",me.getHealth());var inHand=me.getHeldItem();out.put("held",inHand==null?null:inHand.getDisplayName());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
             Map<String,Object> t=null;
             if(target!=null){t=new LinkedHashMap<>();t.put("entityId",target.getEntityId());t.put("type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(target)));t.put("class",target.getClass().getName());
                 t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);}
