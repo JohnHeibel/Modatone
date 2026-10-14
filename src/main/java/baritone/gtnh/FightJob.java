@@ -568,9 +568,9 @@ final class FightJob implements Navigation.Job {
     /** Cover may hide the eyes while leaving the aiming point in view. */
     private boolean visibleAim(Entity t){
         var me=mc.thePlayer;var b=t.boundingBox;
-        var eye=Vec3.createVectorHelper(me.posX,eyeY(),me.posZ);
         double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
-        for(double h:heights)if(mc.theWorld.rayTraceBlocks(eye,Vec3.createVectorHelper(t.posX,b.minY+(b.maxY-b.minY)*h,t.posZ))==null)return true;
+        // A fresh eye each time: the trace moves its start to every block face it crosses.
+        for(double h:heights)if(mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(t.posX,b.minY+(b.maxY-b.minY)*h,t.posZ))==null)return true;
         return false;
     }
     private boolean aimAt(Entity t,double height){
