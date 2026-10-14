@@ -206,7 +206,7 @@ final class FightJob implements Navigation.Job {
             // Ten seconds without a hit. If the engine was walking to the target, how its last search ended is the cause; a
             // search that found a path names none (the target kept its distance), and the evidence is in the receipt either way.
             String cause=phase.equals("pursuing")||phase.equals("closing")?PathFailure.cause(engine,initialCalculations,engine.getPathingBehavior().getGoal(),failure):null;
-            String where=hold?"holding, and it stayed "+round(reach(target))+" blocks from your eye for 10 seconds":cause==null||cause.equals("path_calculation_failed")?null:cause;
+            String where=hold?ranged?"holding, and no shot at it for 10 seconds ("+phase+")":"holding, and it stayed "+round(reach(target))+" blocks from your eye for 10 seconds":cause==null||cause.equals("path_calculation_failed")?null:cause;
             double up=target.boundingBox.minY-me.boundingBox.minY;String at=" (it is "+round(Math.abs(up))+" blocks "+(up>=0?"above":"below")+" your feet, "+round(Math.hypot(target.posX-me.posX,target.posZ-me.posZ))+" across)";
             finish("failed",(where==null?"cannot_reach_target":"cannot_reach_target: "+where)+at);return;
         }
