@@ -568,8 +568,9 @@ final class FightJob implements Navigation.Job {
         for(Object o:mc.theWorld.loadedEntityList){
             Entity e=(Entity)o;
             if(e instanceof EntityLivingBase||!seenEntities.add(e.getEntityId()))continue;
-            double away=e.motionX*(e.posX-me.posX)+e.motionY*(e.posY-me.posY)+e.motionZ*(e.posZ-me.posZ);
-            if(window&&tracked==null&&e.getDistanceToEntity(me)<12&&away>0&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
+            // Away: its next step is farther from the eye. Not the side of the eye it is on: a shot appears just below and to one side, so one aimed up starts "behind" its own flight.
+            double x=e.posX-me.posX,y=e.posY-eyeY(),z=e.posZ-me.posZ,nx=x+e.motionX,ny=y+e.motionY,nz=z+e.motionZ;boolean away=nx*nx+ny*ny+nz*nz>x*x+y*y+z*z;
+            if(window&&tracked==null&&e.getDistanceToEntity(me)<12&&away&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
                 tracked=e;shotKinds.add(e.getClass().getName());if(!shotCounted)countShot();
             }
         }
