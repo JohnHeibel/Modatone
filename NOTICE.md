@@ -9,7 +9,7 @@ Baritone project.
 ## Baritone
 
 - Upstream: https://github.com/cabaletta/baritone, LGPL-3.0-or-later, copyright its contributors.
-- `src/upstream/java` holds 156 files taken from upstream revision
+- `src/upstream/java` holds 155 files taken from upstream revision
   `d9cb2d91a06501c5bcba2181509d0df80361f413`. `UPSTREAM_SOURCES.json` lists each with its upstream
   path and the SHA-256 of the original file. They keep Baritone's licence header.
 - Modifications: 82 of those files were changed by the ModdedBench project in 2026 for the

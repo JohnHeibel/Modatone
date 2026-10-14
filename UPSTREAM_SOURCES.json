@@ -472,11 +472,6 @@
       "sourceSha256": "4fe4a0d8afa8e97614024f97bd72322b37465607ce0fde74bc9777a59b19bfa8"
     },
     {
-      "source": "src/main/java/baritone/utils/pathing/Avoidance.java",
-      "ported": "baritone/utils/pathing/Avoidance.java",
-      "sourceSha256": "bd90c9e56a7599925be07fe7f9824ba40daa12148604d7293e022f43202f88a6"
-    },
-    {
       "source": "src/main/java/baritone/utils/pathing/Favoring.java",
       "ported": "baritone/utils/pathing/Favoring.java",
       "sourceSha256": "95fbff0c68b75a6cc7eb9bece885fce974c9f5164adedf548900df864486437d"

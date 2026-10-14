@@ -133,18 +133,8 @@ public final class Settings {
      */
     public final Setting<Double> walkOnWaterOnePenalty = new Setting<>(3D);
 
-    /**
-     * ModdedBench: added to every move that ends with the head under water, so the search swims at the surface where it
-     * can, keeps dives short (air runs out) and does not flood the whole volume of a lake with nodes.
-     */
-    public final Setting<Double> submergedPenalty = new Setting<>(4D);
-
-    /**
-     * ModdedBench: added to every move that ends in water whose current pushes towards something harmful within a block
-     * (a fluid other than water, or a hazard), so the search crosses a stream upstream of the lava it runs into where it
-     * can. A crossing that has no other way stays allowed.
-     */
-    public final Setting<Double> currentHazardPenalty = new Setting<>(20D);
+    // ModdedBench: submergedPenalty and currentHazardPenalty are the route rules underwater and current_to_harm now
+    // (baritone.gtnh.RouteRules), with the same costs.
 
     /**
      * ModdedBench: added to a parkour jump over lava, another harmful fluid or a hazard, which only a jump that falls short
@@ -478,39 +468,8 @@ public final class Settings {
      */
     public final Setting<Double> backtrackCostFavoringCoefficient = new Setting<>(0.5);
 
-    /**
-     * Toggle the following 4 settings
-     * <p>
-     * They have a noticeable performance impact, so they default off
-     * <p>
-     * Specifically, building up the avoidance map on the main thread before pathing starts actually takes a noticeable
-     * amount of time, especially when there are a lot of mobs around, and your game jitters for like 200ms while doing so
-     */
-    public final Setting<Boolean> avoidance = new Setting<>(false);
-
-    /**
-     * Set to 1.0 to effectively disable this feature
-     * <p>
-     * Set below 1.0 to go out of your way to walk near mob spawners
-     */
-    public final Setting<Double> mobSpawnerAvoidanceCoefficient = new Setting<>(2.0);
-
-    /**
-     * Distance to avoid mob spawners.
-     */
-    public final Setting<Integer> mobSpawnerAvoidanceRadius = new Setting<>(16);
-
-    /**
-     * Set to 1.0 to effectively disable this feature
-     * <p>
-     * Set below 1.0 to go out of your way to walk near mobs
-     */
-    public final Setting<Double> mobAvoidanceCoefficient = new Setting<>(1.5);
-
-    /**
-     * Distance to avoid mobs.
-     */
-    public final Setting<Integer> mobAvoidanceRadius = new Setting<>(8);
+    // ModdedBench: avoidance, mobSpawnerAvoidanceCoefficient/Radius and mobAvoidanceCoefficient/Radius are the route
+    // rules spawners and mobs now (baritone.gtnh.RouteRules), which the model reads and changes with nav.route_rules.
 
     /**
      * When running a goto towards a container block (chest, ender chest, furnace, etc),

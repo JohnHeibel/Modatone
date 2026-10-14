@@ -11,7 +11,7 @@ Modatone is not affiliated with or endorsed by the Baritone project. Do not repo
 
 | Path | What |
 | --- | --- |
-| `src/upstream/java` | 156 files from upstream Baritone at revision `d9cb2d9`, 82 of them modified for 1.7.10 (each says so in its header) |
+| `src/upstream/java` | 155 files from upstream Baritone at revision `d9cb2d9`, 82 of them modified for 1.7.10 (each says so in its header) |
 | `UPSTREAM_SOURCES.json` | every upstream file, its original path and the SHA-256 of the original |
 | `src/main/java/baritone/gtnh` | the port: Forge 1.7.10 terrain and movement adapters, jobs (walk, mine, build), GTNH specifics |
 | `src/test` | JUnit tests, no game needed |

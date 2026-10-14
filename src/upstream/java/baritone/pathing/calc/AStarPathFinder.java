@@ -81,6 +81,8 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
             bestSoFar[i] = startNode;
         }
         MutableMoveResult res = new MutableMoveResult();
+        boolean routing = favoring.routes.any();
+        java.util.function.BooleanSupplier towardsHarm = () -> currentTowardsHarm(res.x, res.y, res.z);
         BetterWorldBorder worldBorder = calcContext.worldBorder;
         long startTime = System.currentTimeMillis();
         boolean slowPath = Baritone.settings().slowPath.value;
@@ -169,7 +171,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                         continue;
                     }
                 }
-                // ModdedBench: with the head under water a move costs air as well as time (Settings.submergedPenalty and
+                // ModdedBench: with the head under water a move costs air as well as time (route rule underwater and
                 // breathSafety); no route runs out of air before the head is out of water.
                 boolean submerged = headUnderWater(currentNode, res.x, res.y + 1, res.z);
                 double edgeTicks = actionCost, airLeft = airAfter(currentNode, edgeTicks, submerged);
@@ -177,11 +179,13 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
                     breathPruned = true;
                     continue;
                 }
-                if (submerged) {
-                    actionCost += calcContext.submergedPenalty;
-                }
-                if (currentTowardsHarm(res.x, res.y, res.z)) {
-                    actionCost += calcContext.currentHazardPenalty;
+                // ModdedBench: the route rules (baritone.gtnh.RouteRules) price or forbid the cell moved into; the
+                // underwater and current-to-harm costs that stood here are two of them
+                if (routing) {
+                    actionCost = favoring.routes.apply(actionCost, res.x, res.y, res.z, submerged, towardsHarm);
+                    if (actionCost >= ActionCosts.COST_INF) {
+                        continue;
+                    }
                 }
                 long hashCode = BetterBlockPos.longHash(res.x, res.y, res.z);
                 if (isFavoring) {
@@ -289,7 +293,7 @@ public final class AStarPathFinder extends AbstractNodeCostSearch {
         return flow == STILL ? null : flow;
     }
 
-    /** ModdedBench: whether the current at (x,y,z) pushes towards a harmful cell next to it (Settings.currentHazardPenalty). */
+    /** ModdedBench: whether the current at (x,y,z) pushes towards a harmful cell next to it (route rule current_to_harm). */
     private boolean currentTowardsHarm(int x, int y, int z) {
         double[] flow = flowAround(x, y, z);
         if (flow == null) {

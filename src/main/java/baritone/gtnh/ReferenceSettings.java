@@ -21,6 +21,7 @@ final class ReferenceSettings {
             for(var setting:actual.allSettings)copy(candidate.byLowerName.get(setting.getName().toLowerCase(Locale.ROOT)),setting.value);
             for(var entry:values.entrySet()){
                 String key=entry.getKey().toString().toLowerCase(Locale.ROOT);var setting=candidate.byLowerName.get(key);
+                if(RouteRules.MOVED.containsKey(key))throw new IllegalArgumentException(key+" is now "+RouteRules.MOVED.get(key)+" (nav.route_rules)");
                 if(setting==null||setting.isJavaOnly())throw new IllegalArgumentException("unknown or Java-only setting: "+key);
                 if(operation.equals("reset"))setting.reset();else {
                     String encoded=text(entry.getValue());

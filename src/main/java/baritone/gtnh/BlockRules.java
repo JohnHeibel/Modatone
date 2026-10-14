@@ -96,11 +96,18 @@ public final class BlockRules {
         if(LISTS.contains(setting)&&value instanceof List<?> list)for(Object entry:list)
             if(entry(String.valueOf(entry))[0] instanceof net.minecraft.item.Item&&!setting.equals("hazards"))throw new IllegalArgumentException("item= (pick-block identity) is for hazards only: "+entry);
     }
-    /** How often each rule decided something since the last reset, as {rule:{block:count}}; counts are search checks, not cells. */
+    /** A test for a list of "modid:name[:meta]" blocks (route rules); an unknown block or an item= entry is refused. */
+    static java.util.function.Predicate<IBlockState> matcher(List<String> entries){
+        for(String entry:entries)if(entry(entry)[0] instanceof net.minecraft.item.Item)throw new IllegalArgumentException("item= is for hazards only: "+entry);
+        Parsed p=parse(entries);return s->p.has(s.getBlock(),s.meta);
+    }
+    /** How often each rule decided something since the last reset, as {rule:{block:count}}, and the route rules as
+     *  routes:{rule:count}; counts are search checks, not cells. */
     public static Map<String,Map<String,Integer>> applied(){
         Map<String,Map<String,Integer>> out=new TreeMap<>();
         applied.forEach((k,v)->{int space=k.indexOf(' ');out.computeIfAbsent(k.substring(0,space),r->new TreeMap<>()).put(k.substring(space+1),v);});
+        var routes=RouteRules.applied();if(!routes.isEmpty())out.put("routes",routes);
         return out;
     }
-    public static void reset(){applied.clear();}
+    public static void reset(){applied.clear();RouteRules.resetApplied();}
 }

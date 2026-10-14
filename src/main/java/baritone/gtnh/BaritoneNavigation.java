@@ -96,6 +96,7 @@ public final class BaritoneNavigation implements Navigation {
         WorkAccess.player();stop();activation.accept(reference);
     }
     @Override public Map<String,Object> settings(Map<String,Object> params){return ReferenceSettings.call(reference,params);}
+    @Override public Map<String,Object> routeRules(Map<String,Object> params){return RouteRules.call(reference,params);}
     @Override public Map<String,Object> cache(Map<String,Object> params){return ReferenceCache.call(reference,params);}
     @Override public Job follow(Map<String,Object> params){
         WorkAccess.player();

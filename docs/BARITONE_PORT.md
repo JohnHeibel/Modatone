@@ -13,7 +13,7 @@ without it; only `nav.*` and `obs.scan`/`terrain`/`fluid`/`tools` need it.
 
 | Location | Contents |
 | --- | --- |
-| `src/upstream/java` | 156 upstream files, adapted in place. `UPSTREAM_SOURCES.json` records each file's original path and the SHA-256 of the original; the build packs that list into the jar. Modified files carry a notice. The hash pins provenance, not text identity after adaptation. |
+| `src/upstream/java` | 155 upstream files, adapted in place. `UPSTREAM_SOURCES.json` records each file's original path and the SHA-256 of the original; the build packs that list into the jar. Modified files carry a notice. The hash pins provenance, not text identity after adaptation. |
 | `src/main/java/baritone/compat` | Version boundary: coordinates, vectors, block state as registry id plus metadata, loaded-chunk index, native placement, inventory swaps, events, rendering. No fake `net.minecraft` classes. |
 | `src/main/java/baritone/gtnh` | ModdedBench side: `BaritoneNavigation` (the `Navigation` implementation the client registers), job wrappers (`Reference*Job`, `MiningProcess`, `ReferenceConstructionProcess`), the validated build plan (`ConstructionPlan`), `PlanImport`, `WorkJournal`, tool and placement adapters. |
 | package `baritone.gtnh.pathing` | Minecraft-free code written for this project and unit tested without a game: work and construction spec validation (`WorkSpec`, `ConstructionMask`), the build order and break rule (`BuildSteps`, `PlanBreaks`), `DeferredClearance`, the corridor constraint (`Corridor`), `GoalRange`, and terrain observation helpers (`TerrainGrid`, `CollisionBox`, `LadderFacing`, `FluidPolicy`). `Move` and `MoveRegistry` are how a kind of movement is added to the search, with the added ones in `baritone.gtnh.moves` ([MOVEMENTS.md](MOVEMENTS.md)). There is no second path search; all routing is upstream's. |
@@ -31,6 +31,7 @@ dependency on the Baritone jar.
 | `nav.build` | `BuilderProcess` (`onTick`, `recalc`, `assemble`) with `InventoryBehavior`, `InventoryPauserProcess`, `BlockBreakHelper`, `BlockPlaceHelper`, `InputOverrideHandler`. |
 | `nav.process` | `goal` (the upstream goal family), `explore`, `get_to_block`, `farm`. Backfill is compiled in. |
 | `nav.follow`, `nav.cache`, `nav.settings` | `FollowProcess`; cached world and regions; `SettingsUtil` behind a structured endpoint that applies typed edits atomically while the engine is idle. |
+| `nav.route_rules` | `Favoring` and `AStarPathFinder`'s per-move costs, as named rules (`RouteRules`) the model reads and changes at any time. Upstream's `Avoidance` (mob and spawner spheres) and our submerged and current-to-harm costs became the built-in rules `mobs`, `spawners`, `underwater` and `current_to_harm`, with their old values; the mob rule matches any `IMob` instead of upstream's spider, pigman and enderman cases. |
 | In game | Path, goal and selection rendering, the event bus, free-look (visible aim is the default), a local `/baritone` command. |
 
 ModdedBench wraps every job in the shared input lease, protected-region checks,

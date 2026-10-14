@@ -228,7 +228,7 @@ public interface MovementHelper extends ActionCosts, Helper {
             IBlockState up = bsi.get0(x, y + 1, z);
             // ModdedBench: upstream refused water with water above, so it only ever swam at the surface: a dive for clay,
             // a flooded tunnel or a pool floor could not be planned at all. Still water is swum through at any depth;
-            // the search's submergedPenalty keeps such routes short, and running out of air is the guards' to report.
+            // the search's underwater route rule keeps such routes short, and running out of air is the guards' to report.
             if (isLava(up.getBlock()) || up.getBlock() instanceof BlockLilyPad) {
                 return false;
             }

@@ -79,8 +79,6 @@ public class CalculationContext {
     public final double breakBlockAdditionalCost;
     public double backtrackCostFavoringCoefficient;
     public double jumpPenalty;
-    public final double submergedPenalty;
-    public final double currentHazardPenalty;
     public final double jumpOverHarmPenalty;
     /** ModdedBench: the player's air when this search was captured (see Settings.breathSafety). */
     public final int air;
@@ -151,8 +149,6 @@ public class CalculationContext {
         this.breakBlockAdditionalCost = Baritone.settings().blockBreakAdditionalPenalty.value;
         this.backtrackCostFavoringCoefficient = Baritone.settings().backtrackCostFavoringCoefficient.value;
         this.jumpPenalty = Baritone.settings().jumpPenalty.value;
-        this.submergedPenalty = Baritone.settings().submergedPenalty.value;
-        this.currentHazardPenalty = Baritone.settings().currentHazardPenalty.value;
         this.jumpOverHarmPenalty = Baritone.settings().jumpOverHarmPenalty.value;
         this.walkOnWaterOnePenalty = Baritone.settings().walkOnWaterOnePenalty.value;
         // why cache these things here, why not let the movements just get directly from settings?
