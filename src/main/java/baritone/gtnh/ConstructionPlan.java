@@ -91,7 +91,7 @@ final class ConstructionPlan {
         Block block=block(c);Item item=Item.getItemFromBlock(block);
         // A mod's hook that throws (it expected its block at that cell) names none.
         if(item==null)try{item=block.getItem(WorkAccess.MC.theWorld,c.pos().getX(),c.pos().getY(),c.pos().getZ());}catch(RuntimeException|LinkageError failed){}
-        if(item==null)throw new IllegalArgumentException("no native item mapping for "+c.id()+"; name the item that places it (cell item)");
+        if(item==null)throw new IllegalArgumentException("no native item mapping for "+c.id()+"; name the item that places it (cell item), or for a cell left empty give clear:true and no id");
         return Map.of("id",Registry.name(item),"meta",block.damageDropped(c.meta()));
     }
     static int inventorySlot(Cell c) {
