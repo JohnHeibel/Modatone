@@ -80,6 +80,8 @@ final class FightJob implements Navigation.Job {
     private boolean clickAfterLoad,shotCounted;
     private String weaponKey="",loaded="";
     private double nearestSeen=Double.MAX_VALUE;
+    /** What the last arc tried would strike before the target, if anything did. */
+    private Entity inTheWay;
     private final Set<Integer> seenEntities=new HashSet<>();
     private final Set<String> shotKinds=new LinkedHashSet<>();
     private final List<Map<String,Object>> adjustments=new ArrayList<>();
@@ -577,10 +579,11 @@ final class FightJob implements Navigation.Job {
         while(x<far&&t<200&&vx>.01){x+=vx;y+=vy;vx*=drag;vy=vy*drag-gravity;t++;}
         return new double[]{x<far?-1e9:y,t};
     }
-    /** Aims at where `t` will be when the shot arrives; true if the arc it flies there is clear of blocks a shot cannot pass.
+    /** Aims at where `t` will be when the shot arrives; true if the arc it flies there is clear of blocks a shot cannot pass
+     *  and of anything else it would strike first.
      *  Blocked at the usual height on the mob (cover to its waist, a lip over you), a higher point on it, then a lower, is tried. */
     private boolean aimBallistic(Entity t){
-        double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
+        double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};inTheWay=null;
         for(double h:heights)if(aimAt(t,h))return true;
         aimAt(t,heights[0]);return false;
     }
@@ -604,10 +607,19 @@ final class FightJob implements Navigation.Job {
         double far=Math.sqrt(dx*dx+dz*dz),ux=dx/far,uz=dz/far,x=0,y=0,vx=speed*Math.cos(angle),vy=speed*Math.sin(angle);
         for(int i=0;i<200&&x<far-.5&&vx>.01;i++){
             double nx=Math.min(x+vx,far-.5),ny=y+vy*(nx-x)/vx;
+            if((inTheWay=struck(t,Vec3.createVectorHelper(ex+ux*x,ey+y,ez+uz*x),Vec3.createVectorHelper(ex+ux*nx,ey+ny,ez+uz*nx)))!=null)return false;
             if(mc.theWorld.func_147447_a(Vec3.createVectorHelper(ex+ux*x,ey+y,ez+uz*x),Vec3.createVectorHelper(ex+ux*nx,ey+ny,ez+uz*nx),false,true,false)!=null)return false;
             x=nx;y=ny;vx*=drag;vy=vy*drag-gravity;
         }
         return true;
+    }
+    /** What a shot flying from a to b strikes other than `t` or a part of it: anything it collides with, its box grown by 0.3 as the game grows it for a projectile. */
+    private Entity struck(Entity t,Vec3 a,Vec3 b){
+        var parts=t.getParts()==null?List.<Entity>of():Arrays.asList(t.getParts());
+        var box=net.minecraft.util.AxisAlignedBB.getBoundingBox(Math.min(a.xCoord,b.xCoord),Math.min(a.yCoord,b.yCoord),Math.min(a.zCoord,b.zCoord),Math.max(a.xCoord,b.xCoord),Math.max(a.yCoord,b.yCoord),Math.max(a.zCoord,b.zCoord)).expand(1,1,1);
+        for(Object o:mc.theWorld.getEntitiesWithinAABBExcludingEntity(mc.thePlayer,box)){var e=(Entity)o;
+            if(e!=t&&!parts.contains(e)&&e.canBeCollidedWith()&&e.boundingBox.expand(.3,.3,.3).calculateIntercept(a,b)!=null)return e;}
+        return null;
     }
     /** One step back is somewhere to stand: floor under it, room in it, no fluid. */
     private boolean clearBehind(){return standable(mc.thePlayer.rotationYaw+180,1.3);}
@@ -650,7 +662,8 @@ final class FightJob implements Navigation.Job {
                 // Out of sight or with no clear shot: the first block on the straight line from your eye to where it would be aimed.
                 if(phase.equals("no_line_of_sight")||phase.equals("no_clear_shot")){var b=target.boundingBox;double h=aimHeight>=0?aimHeight:.6;
                     var hit=mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(target.posX,b.minY+(b.maxY-b.minY)*h,target.posZ));
-                    if(hit!=null)t.put("lineBlockedAt",Map.of("pos",List.of(hit.blockX,hit.blockY,hit.blockZ),"block",String.valueOf(net.minecraft.block.Block.blockRegistry.getNameForObject(mc.theWorld.getBlock(hit.blockX,hit.blockY,hit.blockZ))),"aimHeight",h));}}
+                    if(hit!=null)t.put("lineBlockedAt",Map.of("pos",List.of(hit.blockX,hit.blockY,hit.blockZ),"block",String.valueOf(net.minecraft.block.Block.blockRegistry.getNameForObject(mc.theWorld.getBlock(hit.blockX,hit.blockY,hit.blockZ))),"aimHeight",h));
+                    if(inTheWay!=null&&phase.equals("no_clear_shot"))t.put("shotBlockedBy",Map.of("entityId",inTheWay.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(inTheWay)),"distance",Math.round(inTheWay.getDistanceToEntity(me)*10)/10.0));}}
             out.put("target",t);
             // Whoever is left is the next decision: the same rows obs.entities gives, so nothing here is new knowledge.
             out.put("hostilesInSight",hostiles(16).stream().map(e->Map.of("entityId",e.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(e)),"distance",Math.round(e.getDistanceToEntity(me)*10)/10.0)).toList());
