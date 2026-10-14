@@ -207,7 +207,8 @@ final class FightJob implements Navigation.Job {
             // search that found a path names none (the target kept its distance), and the evidence is in the receipt either way.
             String cause=phase.equals("pursuing")||phase.equals("closing")?PathFailure.cause(engine,initialCalculations,engine.getPathingBehavior().getGoal(),failure):null;
             String where=hold?"holding, and it stayed "+round(reach(target))+" blocks from your eye for 10 seconds":cause==null||cause.equals("path_calculation_failed")?null:cause;
-            finish("failed",where==null?"cannot_reach_target":"cannot_reach_target: "+where);return;
+            double up=target.boundingBox.minY-me.boundingBox.minY;String at=" (it is "+round(Math.abs(up))+" blocks "+(up>=0?"above":"below")+" your feet, "+round(Math.hypot(target.posX-me.posX,target.posZ-me.posZ))+" across)";
+            finish("failed",(where==null?"cannot_reach_target":"cannot_reach_target: "+where)+at);return;
         }
 
         // A mob walks faster than a player backs away: a launcher is no use at arm's length. One in sight within 3.5 blocks
@@ -261,8 +262,9 @@ final class FightJob implements Navigation.Job {
                 phase="out_of_reach";aim(body);if(far<=REACH+1.2&&me.onGround)keys.add(game.keyBindJump.getKeyCode());rest(keys);return;
             }
             outOfReach=0;
-            if(closing.contains(target.getEntityId())&&me.canEntityBeSeen(body)){
-                // It is coming: met here, with the first swing at the edge of reach, rather than walked into with whatever comes with it.
+            if(closing.contains(target.getEntityId())&&comingAt(target)&&me.canEntityBeSeen(body)){
+                // It is coming, by its own going this tick (the gap shrinks as you walk too, and one that has stopped short is
+                // walked to): met here, with the first swing at the edge of reach, rather than walked into with whatever comes with it.
                 phase="awaiting";aim(body);
                 var held=me.getHeldItem();if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){keys.add(game.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);}
                 rest(keys);return;
