@@ -171,12 +171,12 @@ final class FightJob implements Navigation.Job {
         }
 
         // Standing in what burns (the game's own test: fire or lava in the box, or a block a mod says is burning), a step
-        // out of it comes first, to the nearest side with somewhere to stand that does not burn. A drawn weapon stays drawn.
+        // out of it comes first, to the nearest side with somewhere to stand that does not burn. A drawn weapon is let down
+        // (dropDraw): held, it slows the step to a fifth; let go, it flies wherever the eyes are.
         if(Hazards.hurtsToStand(me)){Float out=Hazards.outOfFire(me);
-            if(out!=null){phase="out_of_fire";me.rotationYaw=out;Set<Integer> keys=Hazards.stepKeys(me,out);
-                if(drawn())keys.add(mc.gameSettings.keyBindUseItem.getKeyCode());rest(keys);return;}}
+            if(out!=null){if(drawn())dropDraw();phase="out_of_fire";me.rotationYaw=out;rest(Hazards.stepKeys(me,out));return;}}
         // Thrown by a hit toward a drop: the keys against the throw until the ground, and a crouch while sliding on (Hazards).
-        {var back=Hazards.counter(me,false);if(back!=null){if(!phase.equals("held_against_a_hit"))heldAgainst++;phase="held_against_a_hit";rest(back.keys());return;}}
+        {var back=Hazards.counter(me,false);if(back!=null){if(drawn())dropDraw();if(!phase.equals("held_against_a_hit"))heldAgainst++;phase="held_against_a_hit";rest(back.keys());return;}}
         if(shotPhase==4){lower();return;}
         if(target!=null&&dead(target)&&drawn()){shotPhase=4;phaseTicks=0;lower();return;}
         if(target!=null&&dead(target)){
@@ -360,6 +360,12 @@ final class FightJob implements Navigation.Job {
         var me=mc.thePlayer;
         if(phaseTicks++==0){weaponSlot=me.inventory.currentItem;me.inventory.currentItem=(weaponSlot+1)%9;mc.playerController.updateController();rest(Set.of(mc.gameSettings.keyBindUseItem.getKeyCode()));return;}
         me.inventory.currentItem=weaponSlot;mc.playerController.updateController();shotPhase=0;phaseTicks=0;blind=0;phase="lowered";rest(Set.of());
+    }
+    /** Lets a drawn weapon down at once, for a step that must not wait a tick or walk at a draw's pace: another slot in hand
+     *  ends the use on the server, the client's own use is dropped so no release is sent, and lower() puts the weapon back. */
+    private void dropDraw(){
+        var me=mc.thePlayer;weaponSlot=me.inventory.currentItem;me.inventory.currentItem=(weaponSlot+1)%9;mc.playerController.updateController();
+        me.clearItemInUse();shotPhase=4;phaseTicks=1;
     }
     /** The local player's eye: its client copy's own eye height is an offset from its stance, not from its feet. */
     private double eyeY(){return mc.thePlayer.getPosition(1).yCoord;}
@@ -570,8 +576,10 @@ final class FightJob implements Navigation.Job {
             if(e instanceof EntityLivingBase||!seenEntities.add(e.getEntityId()))continue;
             // Away: its next step is farther from the eye. Not the side of the eye it is on: a shot appears just below and to one side, so one aimed up starts "behind" its own flight.
             double x=e.posX-me.posX,y=e.posY-eyeY(),z=e.posZ-me.posZ,nx=x+e.motionX,ny=y+e.motionY,nz=z+e.motionZ;boolean away=nx*nx+ny*ny+nz*nz>x*x+y*y+z*z;
-            if(window&&tracked==null&&e.getDistanceToEntity(me)<12&&away&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
-                tracked=e;shotKinds.add(e.getClass().getName());if(!shotCounted)countShot();
+            // A shot not yet counted takes the place of one still followed: that one is stale (melee came between, and only a
+            // ranged tick follows it), and left in place it would keep this shot from being counted.
+            if(window&&(tracked==null||!shotCounted)&&e.getDistanceToEntity(me)<12&&away&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
+                tracked=e;track=new ArrayList<>();shotKinds.add(e.getClass().getName());if(!shotCounted)countShot();
             }
         }
         if(tracked==null)return;
@@ -650,11 +658,14 @@ final class FightJob implements Navigation.Job {
     }
     private void finish(String state,String reason){
         if(done())return;this.state=state;this.reason=reason;
-        // A launcher still drawn is let down, not loosed: letting the key go would shoot it wherever the eyes are. Another
-        // item in hand ends the draw on the server, the client's own draw is dropped so no release is sent, and the slot
-        // comes back two of the player's ticks later (letDown).
+        // A shot loosed and not yet counted when its own kill ends the fight (its arrow and the death can reach the client
+        // in one tick, and a death is read first): counted by its arrow, or by what it took from the weapon.
+        if(ranged&&mc.thePlayer!=null&&(shotPhase==1||shotPhase==2)&&!shotCounted){watchShot();if(wore())countShot();}
+        // A launcher still drawn is let down, not loosed: letting the key go would shoot it wherever the eyes are. One let
+        // down and not yet back in hand (dropDraw, lower) comes back two of the player's ticks later (letDown).
         var me=mc.thePlayer;
-        if(ranged&&me!=null&&me.isUsingItem()){downSlot=me.inventory.currentItem;downAt=me.ticksExisted+2;me.inventory.currentItem=(downSlot+1)%9;mc.playerController.updateController();me.clearItemInUse();}
+        if(ranged&&me!=null&&me.isUsingItem())dropDraw();
+        if(me!=null&&shotPhase==4&&phaseTicks>0){downSlot=weaponSlot;downAt=me.ticksExisted+2;}
         engine.getPathingBehavior().forceCancel();engine.getInputOverrideHandler().release();
         saved.forEach(ReferenceSettings::copy);if(lease!=null)lease.close();
     }
