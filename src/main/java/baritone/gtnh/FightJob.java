@@ -471,7 +471,7 @@ final class FightJob implements Navigation.Job {
         if(lastHealth>=0&&health>=0&&health<lastHealth&&shots>0)hits++;
         lastHealth=health;
         // In sight is seen, and the arc the shot would fly clear of blocks: a mob seen over the lip of cover is not one to shoot into it.
-        double distance=me.getDistanceToEntity(t);boolean seen=me.canEntityBeSeen(t),sight=seen&&aimBallistic(t);String unseen=seen?"no_clear_shot":"no_line_of_sight";
+        double distance=me.getDistanceToEntity(t);boolean seen=me.canEntityBeSeen(t)||visibleAim(t),sight=seen&&aimBallistic(t);String unseen=seen?"no_clear_shot":"no_line_of_sight";
         // A weapon already drawn is not dropped, which would loose it unaimed: in sight it is shot from here, whatever the
         // range; out of sight it is held a second for the target to show again, then let down unfired.
         if(drawn()&&!sight){
@@ -564,6 +564,14 @@ final class FightJob implements Navigation.Job {
         double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
         for(double h:heights)if(aimAt(t,h))return true;
         aimAt(t,heights[0]);return false;
+    }
+    /** Cover may hide the eyes while leaving the aiming point in view. */
+    private boolean visibleAim(Entity t){
+        var me=mc.thePlayer;var b=t.boundingBox;
+        var eye=Vec3.createVectorHelper(me.posX,eyeY(),me.posZ);
+        double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
+        for(double h:heights)if(mc.theWorld.rayTraceBlocks(eye,Vec3.createVectorHelper(t.posX,b.minY+(b.maxY-b.minY)*h,t.posZ))==null)return true;
+        return false;
     }
     private boolean aimAt(Entity t,double height){
         var me=mc.thePlayer;var b=t.boundingBox;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
