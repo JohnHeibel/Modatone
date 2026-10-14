@@ -277,7 +277,7 @@ final class FightJob implements Navigation.Job {
                 var held=me.getHeldItem();if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){keys.add(game.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);}
                 rest(keys);return;
             }
-            phase="pursuing";eyes(body,false);engine.tickStart();return;
+            phase="pursuing";if(!building())eyes(body,false);engine.tickStart();return;
         }
         outOfReach=0;
         aim(body);
@@ -342,8 +342,16 @@ final class FightJob implements Navigation.Job {
         return new double[]{e.serverPosX/32.0+paceX*lead,e.serverPosY/32.0+paceY*lead,e.serverPosZ/32.0+paceZ*lead};
     }
     /** Walking to a target, the eyes rest at the height the fight aims at (for a shot, while it is in view). The engine
-     *  turns the head along its path and leaves a pitch it has no use for where it finds it. */
+     *  turns the head along its path and leaves a pitch it has no use for where it finds it, except to build (see building). */
     private void eyes(Entity e,boolean shot){if(!shot||mc.thePlayer.canEntityBeSeen(e))mc.thePlayer.rotationPitch=pitch(e,shot);}
+    /** The engine's move under way has a block still to place or break: where it looks is where it clicks, so the eyes
+     *  are left to it. Set at the mob, a placed block never lands, and a stair up to a mob on a ledge is never built. */
+    private boolean building(){
+        var walk=engine.getPathingBehavior().getCurrent();
+        if(walk==null||walk.getPosition()>=walk.getPath().movements().size())return false;
+        var m=(baritone.pathing.movement.Movement)walk.getPath().movements().get(walk.getPosition());var bsi=new baritone.utils.BlockStateInterface(engine.getPlayerContext());
+        return !m.toPlace(bsi).isEmpty()||!m.toBreak(bsi).isEmpty();
+    }
     /** A weapon held drawn: the use key is down, and letting it go looses the shot. */
     private boolean drawn(){return ranged&&shotPhase==0&&phaseTicks>0;}
     /** Lets a drawn weapon down unfired, as a player does by scrolling off it: one tick on another slot ends the use on
@@ -669,6 +677,10 @@ final class FightJob implements Navigation.Job {
             out.put("hostilesInSight",hostiles(16).stream().map(e->Map.of("entityId",e.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(e)),"distance",Math.round(e.getDistanceToEntity(me)*10)/10.0)).toList());
         }
         if(!failure.isEmpty())out.put("failure",failure);
+        // While it walks to the target: the engine's move under way, the clue to a pursuit that gets no nearer.
+        var walk=done()?null:engine.getPathingBehavior().getCurrent();
+        if(walk!=null&&walk.getPosition()<walk.getPath().movements().size()){var m=walk.getPath().movements().get(walk.getPosition());
+            out.put("movement",m.getClass().getSimpleName().replace("Movement","")+" "+List.of(m.getSrc().x,m.getSrc().y,m.getSrc().z)+" -> "+List.of(m.getDest().x,m.getDest().y,m.getDest().z));}
         out.put("hostileRule",hostileRule);out.put("hostileBy",!byBehaviour?"rule":informed?"behaviour: after you by the server's word, or hit by you":"the monster rule: no word from the server");
         if(!keepAwayRule.isEmpty())out.put("keepAwayRule",keepAwayRule);if(!wentOff.isEmpty())out.put("wentOff",List.copyOf(wentOff));
        out.put("jobSettings",jobSettings);
