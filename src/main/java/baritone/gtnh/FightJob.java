@@ -649,10 +649,23 @@ final class FightJob implements Navigation.Job {
     }
     private void finish(String state,String reason){
         if(done())return;this.state=state;this.reason=reason;
+        // A launcher still drawn is let down, not loosed: letting the key go would shoot it wherever the eyes are. Another
+        // item in hand ends the draw on the server, the client's own draw is dropped so no release is sent, and the slot
+        // comes back two of the player's ticks later (letDown).
+        var me=mc.thePlayer;
+        if(ranged&&me!=null&&me.isUsingItem()){downSlot=me.inventory.currentItem;downAt=me.ticksExisted+2;me.inventory.currentItem=(downSlot+1)%9;mc.playerController.updateController();me.clearItemInUse();}
         engine.getPathingBehavior().forceCancel();engine.getInputOverrideHandler().release();
         saved.forEach(ReferenceSettings::copy);if(lease!=null)lease.close();
     }
     @Override public void cancel(String reason){finish("cancelled",reason);}
+    /** The slot of a launcher a fight let down as it ended, and the player's tick from which to put it back. */
+    private static int downSlot=-1,downAt;
+    /** Each client tick: puts back the slot a drawn launcher was let down from (finish), unless something has changed it since. */
+    static void letDown(){
+        var me=Minecraft.getMinecraft().thePlayer;if(downSlot<0||me==null||me.ticksExisted<downAt)return;
+        if(me.inventory.currentItem==(downSlot+1)%9){me.inventory.currentItem=downSlot;Minecraft.getMinecraft().playerController.updateController();}
+        downSlot=-1;
+    }
     @Override public boolean done(){return !state.equals("fighting");}
     @Override public boolean succeeded(){return state.equals("succeeded");}
     @Override public Map<String,Object> status(){
@@ -664,7 +677,7 @@ final class FightJob implements Navigation.Job {
             out.put("adjustments",adjustments);out.put("shotEntities",List.copyOf(shotKinds));
             out.put("tracks",tracks.stream().map(t->t.stream().map(s->List.of(s[0],s[1])).toList()).toList());} // per shot, per tick: [horizontal speed, vertical speed]
         if(me==player){
-            out.put("health",me.getHealth());var inHand=me.getHeldItem();out.put("held",inHand==null?null:inHand.getDisplayName());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
+            out.put("health",me.getHealth());var inHand=downSlot>=0?me.inventory.getStackInSlot(downSlot):me.getHeldItem();out.put("held",inHand==null?null:inHand.getDisplayName());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
             Map<String,Object> t=null;
             if(target!=null){t=new LinkedHashMap<>();t.put("entityId",target.getEntityId());t.put("type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(target)));t.put("class",target.getClass().getName());
                 t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);
