@@ -340,13 +340,15 @@ final class FightJob implements Navigation.Job {
         return Math.sqrt(dx*dx+dy*dy+dz*dz);
     }
     /**
-     * A swarm's target, each tick: the nearest in reach, else the one it is going to while no other is two blocks nearer,
-     * else the nearest of the pack; never one it has passed over.
+     * A swarm's target, each tick: the one it is hitting while that is in reach (one finished before the next), else the
+     * nearest in reach, else the one it is going to while no other is two blocks nearer, else the nearest of the pack;
+     * never one it has passed over.
      */
     private Entity swarmTarget(Entity current){
         var me=mc.thePlayer;
         // One of a kind kept away from, within 6 blocks, first: met at arm's length before it is beside you.
         Entity kept=pack().stream().filter(e->!passed(e)&&keepAway.test(e)&&e.getDistanceToEntity(me)<=6).findFirst().orElse(null);if(kept!=null)return kept;
+        if(current!=null&&!dead(current)&&!passed(current)&&hostile.test(current)&&reach(current)<=REACH)return current;
         Entity inReach=hostiles(REACH+2).stream().filter(e->!passed(e)&&reach(e)<=REACH).findFirst().orElse(null);
         if(inReach!=null)return inReach;
         List<Entity> all=pack().stream().filter(e->!passed(e)).toList();if(all.isEmpty())return null;
