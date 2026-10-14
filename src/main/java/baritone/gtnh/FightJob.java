@@ -649,7 +649,11 @@ final class FightJob implements Navigation.Job {
             out.put("health",me.getHealth());var inHand=me.getHeldItem();out.put("held",inHand==null?null:inHand.getDisplayName());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
             Map<String,Object> t=null;
             if(target!=null){t=new LinkedHashMap<>();t.put("entityId",target.getEntityId());t.put("type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(target)));t.put("class",target.getClass().getName());
-                t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);}
+                t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);
+                // Out of sight or with no clear shot: the first block on the straight line from your eye to where it would be aimed.
+                if(phase.equals("no_line_of_sight")||phase.equals("no_clear_shot")){var b=target.boundingBox;double h=aimHeight>=0?aimHeight:.6;
+                    var hit=mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(target.posX,b.minY+(b.maxY-b.minY)*h,target.posZ));
+                    if(hit!=null)t.put("lineBlockedAt",Map.of("pos",List.of(hit.blockX,hit.blockY,hit.blockZ),"block",String.valueOf(net.minecraft.block.Block.blockRegistry.getNameForObject(mc.theWorld.getBlock(hit.blockX,hit.blockY,hit.blockZ))),"aimHeight",h));}}
             out.put("target",t);
             // Whoever is left is the next decision: the same rows obs.entities gives, so nothing here is new knowledge.
             out.put("hostilesInSight",hostiles(16).stream().map(e->Map.of("entityId",e.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(e)),"distance",Math.round(e.getDistanceToEntity(me)*10)/10.0)).toList());
