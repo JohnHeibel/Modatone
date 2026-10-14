@@ -5,26 +5,30 @@ package baritone.gtnh;
 
 import baritone.Baritone;
 import dev.modbench.api.ControlRegistry;
+import dev.modbench.api.Engaged;
 import dev.modbench.api.InputArbiter;
 import dev.modbench.api.Navigation;
 import net.minecraft.client.Minecraft;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityLivingBase;
-import net.minecraft.entity.monster.EntityCreeper;
+import net.minecraft.entity.player.EntityPlayer;
+import net.minecraft.util.Vec3;
 import java.util.*;
 import java.util.function.Predicate;
 import static baritone.gtnh.pathing.WorkSpec.*;
 
 /**
  * One fight, at the level mining is one job: the caller names the target and the limits, this does the footwork.
- * The target is whatever entity the caller names (entityId, or a selector); hostility is a rule the caller may replace,
- * used only for hold's default target, the outnumbered guard and the report.
+ * The target is whatever entity the caller names (entityId, or a selector). Hostile, for hold's and swarm's targets, the
+ * outnumbered guard, what is struck aside and the report, is by default what is after you, by the server's word (you are
+ * its target, or it hurt you last) or because this fight hit it, and of the monster rule one steadily coming at you or out
+ * of sight: a behaviour, never a kind of mob. A caller's rule replaces it.
  * Out of reach the source FollowProcess paths to the target; in reach the engine rests and this aims, blocks with a
  * sword between swings and lands each swing while falling (a critical hit). It ends, as a failure so that the
  * actionFailed guard pauses the world, as soon as the fight is no longer the one that was asked for.
  */
 final class FightJob implements Navigation.Job {
-    private static final double REACH=3;
+    private static final double REACH=3,SIGHT=16;
     private final Minecraft mc=Minecraft.getMinecraft();
     private final Baritone engine;
     private final Object world=mc.theWorld,player=mc.thePlayer;
@@ -33,27 +37,48 @@ final class FightJob implements Navigation.Job {
     private final Map<String,Object> jobSettings=new LinkedHashMap<>();
     private final InputArbiter.Lease lease;
     private final Integer chosen;
-    private final Predicate<Entity> named,hostile;
-    private final List<Map<String,Object>> hostileRule;
-    private final boolean hold,swarm,crit,block;
-    private final int duration,interval,maxAttackers,maxGrowth,startHostiles;
-    private final double leash,bailHealth,maxHealthLoss,startHealth,ax,ay,az;
+    private final Predicate<Entity> named,hostile,monster,keepAway;
+    private final List<Map<String,Object>> hostileRule,keepAwayRule;
+    private final boolean hold,swarm,crit,block,byBehaviour;
+    private final int duration,interval,maxGrowth;
+    private int maxAttackers=2;private boolean attackersSet;
+    // Who is after you: the server's word (Engaged, fresh while a fight runs), and whom this fight has hit.
+    private final Set<Integer> engaged=new HashSet<>(),struck=new HashSet<>();private boolean informed;
+    // Kept away from: the kinds seen to go off beside you in this fight (gone with health left as you took a hit), and the caller's.
+    private final Set<String> wentOff=new LinkedHashSet<>();
+    private final Map<Integer,Object[]> lastNear=new HashMap<>();private final List<Object[]> vanished=new ArrayList<>();private final float[] felt=new float[4];
+    private final Map<Integer,double[]> still=new HashMap<>(); // each close mob: where it was, and for how many ticks it has not moved
+    private final Set<Integer> running=new HashSet<>(); // the still ones being run from
+    private final Map<Integer,Double> toward=new HashMap<>(); // each monster's own going toward you, summed over about the last second and a half
+    private final Map<Integer,Integer> passedUntil=new HashMap<>(); // swarm: the mobs it could not get at, passed over until that tick
+    private Entity chased;private int chaseFrom,passedOver;private final List<String> taken=new ArrayList<>(); // each mob it took on, and why it counted as hostile
+    private final Set<Integer> present=new HashSet<>(); // the hostiles within 32 blocks when the fight began, seen or not: the fight that was chosen
+    private final Map<Integer,double[]> place=new HashMap<>();private final List<double[]> fell=new ArrayList<>();private final Set<Integer> judged=new HashSet<>(); // where each of those is, and where and when one died [x,y,z,tick]
+    private final Map<Integer,double[]> gaps=new HashMap<>(); // each hostile's distance, the last four times it was taken (every 10 ticks)
+    private final Set<Integer> cameAt=new HashSet<>(),closing=new HashSet<>(); // who has come at you (struck aside), and who is coming now, half a block nearer than half a second ago (met, not walked to)
+    private int aside;
+    private final double bailHealth,maxHealthLoss,startHealth,ax,ay,az,aimHeight;
+    private final boolean leashGiven;
+    private double leash;
+    private Entity leashed;
+    private int ledId=-1,ledX,ledY,ledZ,ledTick;private double paceX,paceY,paceZ; // where(): the server's last word on the target, and its pace
     private final long initialCalculations;
     private final Map<String,Object> failure=new LinkedHashMap<>();
     private String state="fighting",reason="",phase="starting";
     private Entity target;
-    // One pass over the loaded entities a tick: creepers and the hostile rule's matches in sight within 8, nearest first.
+    // One pass over the loaded entities a tick: the monster rule's, the hostile and the kept-away in sight within 8, nearest first.
     private List<Entity> close=List.of();
-    private int ticks,lastAttack=-100,lastUseful,attacks,crits,kills,clearTicks;
+    private int ticks,lastAttack=-100,lastUseful,attacks,crits,kills,clearTicks,outOfReach;
     // Ranged: nothing here knows a weapon. How it is used is found by trying (hold and release; if nothing flies, click); how
     // its projectile flies comes in as numbers, and each shot's velocity samples go back out for the caller to fit them from.
     private boolean ranged;
     private Integer meleeSlot;
     private float lastHealth=-1;
     private double minRange=6,maxRange=20,speed=3,gravity=.05,drag=.99;
-    private int drawTicks=20,reloadTicks=5,shotPhase,phaseTicks,shots,hits,duds;
-    private boolean clickAfterLoad;
-    private String weaponKey="";
+    private int drawTicks=20,reloadTicks=5,shotPhase,phaseTicks,shots,hits,duds,watchUntil=-1,stalled,blind,weaponSlot;
+    private boolean clickAfterLoad,shotCounted;
+    private String weaponKey="",loaded="";
+    private double nearestSeen=Double.MAX_VALUE;
     private final Set<Integer> seenEntities=new HashSet<>();
     private final Set<String> shotKinds=new LinkedHashSet<>();
     private final List<Map<String,Object>> adjustments=new ArrayList<>();
@@ -65,18 +90,29 @@ final class FightJob implements Navigation.Job {
     FightJob(Baritone engine,Map<String,Object> params){
         this.engine=engine;
         // Swarm: stand and hit whichever mob of the hostile rule is nearest in reach, at the weapon's full rate, however many come.
-        swarm=bool(params,"swarm",false);hold=swarm||bool(params,"hold",false);crit=bool(params,"crit",!swarm);block=bool(params,"block",!swarm);
+        swarm=bool(params,"swarm",false);hold=bool(params,"hold",false);crit=bool(params,"crit",!swarm);block=bool(params,"block",!swarm);
         if(swarm&&(params.containsKey("entityId")||params.containsKey("target")))throw new IllegalArgumentException("swarm fights whatever the hostile rule matches in reach: it takes no entityId or target");
         chosen=params.containsKey("entityId")?integer(params,"entityId",0,Integer.MIN_VALUE,Integer.MAX_VALUE):null;
         named=chosen!=null?e->e.getEntityId()==chosen:params.containsKey("target")?ReferenceFollowJob.selector(child(params,"target")):null;
-        hostileRule=params.containsKey("hostile")?list(params.get("hostile")).stream().map(o->object(o)).toList():List.of(Map.of("class","net.minecraft.entity.monster.IMob"));
-        var rules=hostileRule.stream().map(ReferenceFollowJob::selector).toList();hostile=e->rules.stream().anyMatch(r->r.test(e));
-        if(named==null&&!hold)throw new IllegalArgumentException("fight needs entityId (from obs.entities or the clock's threats) or a target selector {entityId|uuid|type|name|class}, or hold:true to stand and hit whatever the hostile rule matches");
+        // By default hostile is a behaviour: after you. The monster rule (IMob) bounds the pack the fight began with, and
+        // stands in for the server's word when none has come for a second.
+        byBehaviour=!params.containsKey("hostile");
+        hostileRule=byBehaviour?List.of(Map.of("class","net.minecraft.entity.monster.IMob")):list(params.get("hostile")).stream().map(o->object(o)).toList();
+        var rules=hostileRule.stream().map(ReferenceFollowJob::selector).toList();monster=e->rules.stream().anyMatch(r->r.test(e));
+        hostile=byBehaviour?e->e instanceof EntityLivingBase&&!(e instanceof EntityPlayer)&&provoked(e):monster;
+        keepAwayRule=params.containsKey("keepAway")?list(params.get("keepAway")).stream().map(o->object(o)).toList():List.of();
+        var keep=keepAwayRule.stream().map(ReferenceFollowJob::selector).toList();keepAway=e->wentOff.contains(type(e))||keep.stream().anyMatch(r->r.test(e));
+        if(named==null&&!hold&&!swarm)throw new IllegalArgumentException("fight needs entityId (from obs.entities or the clock's threats) or a target selector {entityId|uuid|type|name|class}, or hold:true to stand and hit whatever the hostile rule matches");
         duration=integer(params,"durationTicks",600,1,6000);interval=integer(params,"intervalTicks",10,10,40);
-        maxAttackers=integer(params,"maxAttackers",2,1,8);leash=number(params,"leash",16,2,48);bailHealth=number(params,"bailHealth",8,0,40);
-        // Going badly, before the bail line: this much health lost in this fight, or this many more hostiles in sight than at the start.
+        leashGiven=params.containsKey("leash");leash=number(params,"leash",16,2,96);bailHealth=number(params,"bailHealth",8,0,40);
+        // Going badly, before the bail line: this much health lost in this fight, or this many hostiles come close that were not there when it began.
         maxHealthLoss=number(params,"maxHealthLoss",10,1,100);maxGrowth=integer(params,"maxGrowth",3,0,64);
-        var me=mc.thePlayer;ax=me.posX;ay=me.boundingBox.minY;az=me.posZ;startHealth=me.getHealth();close=close();startHostiles=hostiles(8).size();
+        // Where on the target the crosshair rests, feet 0 to top 1. A swing lands wherever in reach it is aimed, so it looks low; a shot lands where it is aimed.
+        aimHeight=params.containsKey("aimHeight")?number(params,"aimHeight",.6,0,1):-1;
+        var me=mc.thePlayer;ax=me.posX;ay=me.boundingBox.minY;az=me.posZ;startHealth=me.getHealth();Arrays.fill(felt,me.getHealth());refresh();close=close();
+        for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&e!=me&&!dead(e)&&e.getDistanceToEntity(me)<=32&&(monster.test(e)||hostile.test(e)))present.add(e.getEntityId());
+        // A pack in sight when the fight was chosen is part of it: closing in is what it was always going to do. Counted once the server has said who is after you.
+        if(params.containsKey("maxAttackers")){maxAttackers=integer(params,"maxAttackers",2,1,16);attackersSet=true;}
         if(params.containsKey("weaponSlot")){me.inventory.currentItem=integer(params,"weaponSlot",0,0,8);mc.playerController.updateController();}
         ranged=params.containsKey("ranged");
         if(ranged){
@@ -86,7 +122,7 @@ final class FightJob implements Navigation.Job {
             speed=number(asked,"speed",3,.1,20);gravity=number(asked,"gravity",.05,0,1);drag=number(asked,"drag",.99,.5,1);
             drawTicks=integer(asked,"drawTicks",20,1,200);reloadTicks=integer(asked,"reloadTicks",5,0,400);clickAfterLoad=bool(asked,"clickAfterLoad",false);
             if(asked.containsKey("meleeSlot"))meleeSlot=integer(asked,"meleeSlot",0,0,8);
-            minRange=number(asked,"minRange",6,0,32);maxRange=number(asked,"maxRange",20,4,48);
+            minRange=number(asked,"minRange",6,0,32);maxRange=number(asked,"maxRange",20,4,96);
             for(Object o:mc.theWorld.loadedEntityList)seenEntities.add(((Entity)o).getEntityId());
         }
         var settings=Baritone.settings();
@@ -103,6 +139,7 @@ final class FightJob implements Navigation.Job {
     void tick(){
         if(done())return;
         var me=mc.thePlayer;
+        if(me==player&&mc.theWorld==world)watch(); // before the end of a fight that a blast ended
         if(WorkAccess.died(player)){finish("failed","player_died");return;}
         if(mc.theWorld!=world||me!=player||!scope.equals(ControlRegistry.memory().memory().scope())){cancel("world_changed");return;}
         if(!lease.isActive()){cancel(WorkAccess.lost(lease,"control_lost"));return;}
@@ -110,58 +147,135 @@ final class FightJob implements Navigation.Job {
         if(ticks++>=duration){finish("failed","duration_elapsed");return;}
         if(me.getHealth()<=bailHealth){finish("failed","health_at_bail_line");return;}
         if(startHealth-me.getHealth()>=maxHealthLoss){finish("failed","health_lost: "+Math.round((startHealth-me.getHealth())*10)/10.0+" of "+startHealth+" lost in this fight, "+kills+" kills");return;}
-        close=close();
-        int inSight=hostiles(8).size();
-        if(inSight>startHostiles+maxGrowth){finish("failed","swarm_growing: "+startHostiles+" hostiles in sight at the start, "+inSight+" now after "+kills+" kills");return;}
+        refresh();close=close();
+        if(!attackersSet&&(informed||ticks>20)){maxAttackers=Math.max(2,hostiles(16).size());attackersSet=true;}
+        // What one of the fight leaves where it dies (a slime's halves come out of its body a second later) is the same fight, not more arriving.
+        for(int id:present){Entity e=mc.theWorld.getEntityByID(id);
+            if(e!=null&&!dead(e))place.put(id,new double[]{e.posX,e.posY,e.posZ});
+            else{double[] at=place.remove(id);if(at!=null)fell.add(new double[]{at[0],at[1],at[2],ticks});}}
+        fell.removeIf(f->ticks-f[3]>40);
+        for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&!present.contains(e.getEntityId())&&judged.add(e.getEntityId())&&monster.test(e)
+            &&fell.stream().anyMatch(f->e.getDistance(f[0],f[1],f[2])<=3))present.add(e.getEntityId());
+        long arrived=hostiles(8).stream().filter(e->!present.contains(e.getEntityId())).count();
+        if(arrived>maxGrowth){finish("failed","swarm_growing: "+arrived+" hostiles within 8 blocks that were not within 32 when the fight began, after "+kills+" kills");return;}
         List<Entity> near=hostiles(4);
-        if(!swarm&&near.size()>maxAttackers){finish("failed","outnumbered: "+near.size()+" entities of the hostile rule within 4 blocks");return;}
-        for(Entity e:close)if(e instanceof EntityCreeper creeper&&e!=target&&creeper.getCreeperState()>0&&e.getDistanceToEntity(me)<=7){finish("failed","creeper_swelling: entity "+e.getEntityId());return;}
+        if(!swarm&&attackersSet&&near.size()>maxAttackers){finish("failed","outnumbered: "+near.size()+" entities of the hostile rule within 4 blocks, max_attackers "+maxAttackers);return;}
+        if(ticks%10==0)for(Entity e:matching(x->monster.test(x)||hostile.test(x),12)){ // each one's distance over the last second and a half
+            double d=e.getDistanceToEntity(me);double[] g=gaps.computeIfAbsent(e.getEntityId(),k->new double[]{d,d,d,d});
+            System.arraycopy(g,1,g,0,3);g[3]=d;if(g[0]-d>=1.5)cameAt.add(e.getEntityId());
+            if(g[2]-d>=.5)closing.add(e.getEntityId());else closing.remove(e.getEntityId());
+        }
 
-        if(target!=null&&dead(target)){kills++;target=null;if(chosen!=null){finish("succeeded","target_dead");return;}}
+        if(shotPhase==4){lower();return;}
+        if(target!=null&&dead(target)&&drawn()){shotPhase=4;phaseTicks=0;lower();return;}
+        if(target!=null&&dead(target)){
+            // Gone with health left is not a kill: it blew itself up, despawned, or went where the client no longer sees it.
+            float left=target instanceof EntityLivingBase l?l.getHealth():0;target=null;
+            if(left<=0)kills++;
+            if(chosen!=null){if(left<=0)finish("succeeded","target_dead");else finish("failed","target_gone: it left the world with "+round(left)+" health (it exploded, despawned or went out of sight range), not by your hits");return;}
+        }
         if(chosen!=null){
             target=mc.theWorld.getEntityByID(chosen);
             if(target==null||dead(target)){target=null;finish("failed",attacks>0?"target_lost":"no_such_entity");return;}
         } else {
             // A selector (or, holding, the hostile rule) keeps its target while it lives, else takes the nearest match in sight.
-            if(swarm){Entity closest=hostiles(REACH+2).stream().filter(e->reach(e)<=REACH).findFirst().orElse(null);if(closest!=null)target=closest;}
-            if(target==null){List<Entity> all=named!=null?matching(named,hold?8:leash):hostiles(8);target=all.isEmpty()?null:all.get(0);}
-            if(target==null){phase="clear";rest(Set.of());if(++clearTicks>=40)finish("succeeded","clear");return;}
+            if(swarm)target=swarmTarget(target);
+            if(target==null&&!swarm){List<Entity> all=named!=null?matching(named,hold?SIGHT:leash):hostiles(SIGHT);target=all.isEmpty()?null:all.get(0);}
+            if(target==null){
+                // Clear for two seconds, or five while monsters in sight are left alone: long enough for one coming at you to show it.
+                phase="clear";rest(Set.of());if(++clearTicks<40||clearTicks<100&&byBehaviour&&!matching(e->monster.test(e)&&!hostile.test(e),SIGHT).isEmpty())return;
+                List<Entity> left=swarm?pack():List.of();
+                if(left.isEmpty())finish("succeeded","clear"+remaining());
+                else finish("failed","cannot_reach_target: "+left.size()+" of the fight passed over, each out of reach for 5 seconds; the nearest "+describe(left.get(0)));
+                return;
+            }
             clearTicks=0;
         }
-        double tx=target.posX-ax,ty=target.boundingBox.minY-ay,tz=target.posZ-az;
-        if(!hold&&Math.sqrt(tx*tx+ty*ty+tz*tz)>leash){finish("failed","target_beyond_leash");return;}
+        if(target!=chased){chased=target;chaseFrom=ticks;if(target!=null&&taken.size()<16)taken.add(type(target)+" "+target.getEntityId()+": "+why(target));}
+        // The leash is on the player: how far this fight may draw you from where it began. A mob knocked back by your own
+        // hits, or one that began far off and is coming, is still the fight you chose. Left to the default, the walk to
+        // where the mob stood when the fight took it up is not counted against it.
+        if(target!=leashed){leashed=target;if(!leashGiven)leash=Math.max(leash,16+Math.ceil(Math.sqrt(Math.pow(target.posX-ax,2)+Math.pow(target.posY-ay,2)+Math.pow(target.posZ-az,2))));}
+        if(moved()>leash){finish("failed","beyond_leash: the fight has drawn you "+round(moved())+" blocks from where it began (leash "+round(leash)+"); the target is "+round(target.getDistanceToEntity(me))+" blocks from you");return;}
         if(ticks-lastUseful>200){
             // Ten seconds without a hit. If the engine was walking to the target, how its last search ended is the cause; a
             // search that found a path names none (the target kept its distance), and the evidence is in the receipt either way.
             String cause=phase.equals("pursuing")||phase.equals("closing")?PathFailure.cause(engine,initialCalculations,engine.getPathingBehavior().getGoal(),failure):null;
-            finish("failed",cause==null||cause.equals("path_calculation_failed")?"cannot_reach_target":"cannot_reach_target: "+cause);return;
+            String where=hold?"holding, and it stayed "+round(reach(target))+" blocks from your eye for 10 seconds":cause==null||cause.equals("path_calculation_failed")?null:cause;
+            finish("failed",where==null?"cannot_reach_target":"cannot_reach_target: "+where);return;
         }
 
         if(ranged&&shotPhase!=1&&shotPhase!=2&&!hostiles(3.5).isEmpty()){ // a mob walks faster than a player backs away: a launcher is no use at arm's length
             if(meleeSlot==null){finish("failed","hostile_in_melee_range: the ranged fight is over, "+shots+" shots; fight on with a melee weapon (or pass ranged.meleeSlot) or leave");return;}
-            ranged=false;me.inventory.currentItem=meleeSlot;mc.playerController.updateController();rest(Set.of());
+            boolean drawn=drawn();ranged=false;me.inventory.currentItem=meleeSlot;mc.playerController.updateController();
             if(chosen==null||reach(target)>REACH)target=hostiles(3.5).get(0);
+            rest(drawn?Set.of(mc.gameSettings.keyBindUseItem.getKeyCode()):Set.of());if(drawn)return;
         }
         if(ranged){rangedTick(target);return;}
-        boolean inReach=reach(target)<=REACH&&me.canEntityBeSeen(target);
-        if(!inReach&&!hold){phase="pursuing";engine.tickStart();return;}
-        Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;
-        aim(target);
-        // Backwards only onto somewhere to stand: with a drop, a wall or a fluid behind, the fight goes on where it is.
-        if(target instanceof EntityCreeper creeper&&creeper.getCreeperState()>0&&clearBehind()){phase="backing_off";keys.add(game.keyBindBack.getKeyCode());rest(keys);lastUseful=ticks;return;}
-        phase=inReach?"striking":"holding";
+        Entity body=nearest(target);double far=boxReach(body);
+        boolean inReach=far<=REACH&&touchable(body);
+        Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;int since=ticks-lastAttack;
+        // One kept away from that stands still close by is getting ready: a sprint away from it onto somewhere to stand, until
+        // it is 8 blocks off or comes at you again. With nowhere to go, a swing when one is ready, where it is.
+        Entity lit=hold?null:lit();
+        if(lit!=null){
+            phase="keeping_away";lastUseful=ticks;Entity part=nearest(lit);boolean hit=boxReach(part)<=REACH&&touchable(part)&&since>=interval;
+            Float away=escape(lit);
+            if(away==null){aim(part);if(hit)strike(part,false);}
+            else{me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());}
+            rest(keys);return;
+        }
+        // One kept away from is fought at arm's length: struck as it comes into reach, and backed away from while the next
+        // swing gathers, so it is not let within 3.5 blocks with no swing ready.
+        Entity kept=hold?null:close.stream().filter(e->keepAway.test(e)&&touchable(e)&&e.getDistanceToEntity(me)<3.5).findFirst().orElse(null);
+        if(kept!=null){
+            Entity part=nearest(kept);Float away=since>=interval&&boxReach(part)<=REACH?null:escape(kept);
+            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);strike(part,false);rest(keys);return;}
+            if(away!=null){phase="arms_length";me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return;}
+        }
+        // A swarm passes over a mob it cannot get at (three seconds beside it out of reach, or five without a hit since it
+        // took it up) and takes the next; with only those left it says so rather than clear.
+        if(swarm&&!inReach&&(outOfReach>=60||ticks-Math.max(chaseFrom,lastUseful)>=100)){
+            passedUntil.put(target.getEntityId(),ticks+200);passedOver++;target=null;outOfReach=0;lastUseful=ticks;rest(Set.of());return;
+        }
+        if(!inReach&&!hold&&!swarm){
+            // Another that has come at you, in reach while the target is not: struck where it stands, not walked past.
+            Entity other=hostiles(REACH+2).stream().filter(e->e!=target&&cameAt.contains(e.getEntityId())&&reach(e)<=REACH).findFirst().orElse(null);
+            if(other!=null){body=nearest(other);inReach=true;}
+        }
+        boolean struckAside=inReach&&body!=nearest(target);
+        if(!inReach&&!hold){
+            // Beside or under it and still out of reach: it is above or below where walking can take a swing. Wait for it
+            // (jumping when a jump would do), and say so after three seconds rather than walk in circles for ten.
+            if(Math.hypot(target.posX-me.posX,target.posZ-me.posZ)<=2.5&&me.canEntityBeSeen(body)){
+                if(++outOfReach>=60&&!swarm){finish("failed","cannot_reach_target: it has stayed "+round(far)+" blocks from your eye, above or below where you can stand, for 3 seconds (reach "+round(REACH)+")");return;}
+                phase="out_of_reach";aim(body);if(far<=REACH+1.2&&me.onGround)keys.add(game.keyBindJump.getKeyCode());rest(keys);return;
+            }
+            outOfReach=0;
+            if(closing.contains(target.getEntityId())&&me.canEntityBeSeen(body)){
+                // It is coming: met here, with the first swing at the edge of reach, rather than walked into with whatever comes with it.
+                phase="awaiting";aim(body);
+                var held=me.getHeldItem();if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){keys.add(game.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);}
+                rest(keys);return;
+            }
+            phase="pursuing";eyes(body,false);engine.tickStart();return;
+        }
+        outOfReach=0;
+        aim(body);
+        phase=struckAside?"striking_aside":inReach?"striking":"holding";
         var held=me.getHeldItem();
         if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){
             keys.add(game.keyBindUseItem.getKeyCode());
             if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held); // a held key keeps the block up; it does not raise it
         }
-        int since=ticks-lastAttack;
         boolean falling=!me.onGround&&me.fallDistance>0&&!me.isInWater()&&!me.isOnLadder();
-        if(crit&&inReach&&me.onGround&&since>=interval-6)keys.add(game.keyBindJump.getKeyCode());
-        if(inReach&&since>=interval&&(!crit||falling||since>=interval+10)){
-            mc.playerController.attackEntity(me,target);me.swingItem();attacks++;if(falling)crits++;lastAttack=lastUseful=ticks;
-        }
+        boolean timed=crit&&!comingAt(target)&&!keepAway.test(target); // one coming at you is hit the moment it is in reach: the knockback is worth more than the crit
+        if(timed&&inReach&&me.onGround&&since>=interval-6)keys.add(game.keyBindJump.getKeyCode());
+        if(inReach&&since>=interval&&(!timed||falling||since>=interval+10)){strike(body,falling);if(struckAside)aside++;}
         rest(keys);
+    }
+    private void strike(Entity body,boolean falling){
+        mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
     }
     /** The engine does not tick here, so its keys and any block it was breaking are let go and ours are published. */
     private void rest(Set<Integer> keys){
@@ -169,18 +283,162 @@ final class FightJob implements Navigation.Job {
         lease.setKeys(keys);lease.look(mc.thePlayer.rotationYaw,mc.thePlayer.rotationPitch);
     }
     private void aim(Entity e){
-        var me=mc.thePlayer;
-        double dx=e.posX-me.posX,dz=e.posZ-me.posZ,dy=e.boundingBox.minY+e.height*.6-(me.boundingBox.minY+me.getEyeHeight());
-        me.rotationYaw=(float)(Math.toDegrees(Math.atan2(dz,dx))-90);me.rotationPitch=(float)-Math.toDegrees(Math.atan2(dy,Math.sqrt(dx*dx+dz*dz)));
+        var me=mc.thePlayer;double[] at=where(e);
+        me.rotationYaw=(float)(Math.toDegrees(Math.atan2(at[2]-me.posZ,at[0]-me.posX))-90);me.rotationPitch=pitch(e,false);
     }
-    /** Eye to the nearest point of the target's box, which is what the server measures a hit by. */
-    private double reach(Entity e){
-        var me=mc.thePlayer;var b=e.boundingBox;double ex=me.posX,ey=me.boundingBox.minY+me.getEyeHeight(),ez=me.posZ;
+    private float pitch(Entity e,boolean shot){
+        var me=mc.thePlayer;double[] at=shot?new double[]{e.posX,e.boundingBox.minY,e.posZ}:where(e);double dx=at[0]-me.posX,dz=at[2]-me.posZ;
+        return (float)-Math.toDegrees(Math.atan2(at[1]-e.boundingBox.minY+aimY(e,shot)-eyeY(),Math.sqrt(dx*dx+dz*dz)));
+    }
+    /**
+     * Where a target at arm's length is now, feet: {x,y,z}. The client draws a mob sliding to where the server last put
+     * it, and the server says where every third tick, so a mob coming fast stands a block nearer than it is drawn; a look
+     * laid on the drawn one falls short of where it was meant. This is the server's last word carried on at the pace of
+     * its last two. An entity the server never moves by itself (a part of a larger one) is where it is drawn.
+     */
+    private double[] where(Entity e){
+        if(e.serverPosX==0&&e.serverPosY==0&&e.serverPosZ==0)return new double[]{e.posX,e.boundingBox.minY,e.posZ};
+        if(e.getEntityId()!=ledId){ledId=e.getEntityId();ledX=e.serverPosX;ledY=e.serverPosY;ledZ=e.serverPosZ;ledTick=ticks;paceX=paceY=paceZ=0;}
+        else if(e.serverPosX!=ledX||e.serverPosY!=ledY||e.serverPosZ!=ledZ){
+            double per=32.0*Math.max(1,ticks-ledTick);
+            paceX=(e.serverPosX-ledX)/per;paceY=(e.serverPosY-ledY)/per;paceZ=(e.serverPosZ-ledZ)/per;
+            if(paceX*paceX+paceY*paceY+paceZ*paceZ>1)paceX=paceY=paceZ=0; // over a block a tick is no walk: a teleport, a blast
+            ledX=e.serverPosX;ledY=e.serverPosY;ledZ=e.serverPosZ;ledTick=ticks;
+        }
+        int age=ticks-ledTick;if(age>4)paceX=paceY=paceZ=0; // no word for longer than the server leaves between two: it stands still
+        double lead=Math.min(age,3)+1; // and the tick this look takes to reach the server
+        return new double[]{e.serverPosX/32.0+paceX*lead,e.serverPosY/32.0+paceY*lead,e.serverPosZ/32.0+paceZ*lead};
+    }
+    /** Walking to a target, the eyes rest at the height the fight aims at (for a shot, while it is in view). The engine
+     *  turns the head along its path and leaves a pitch it has no use for where it finds it. */
+    private void eyes(Entity e,boolean shot){if(!shot||mc.thePlayer.canEntityBeSeen(e))mc.thePlayer.rotationPitch=pitch(e,shot);}
+    /** A weapon held drawn: the use key is down, and letting it go looses the shot. */
+    private boolean drawn(){return ranged&&shotPhase==0&&phaseTicks>0;}
+    /** Lets a drawn weapon down unfired, as a player does by scrolling off it: one tick on another slot ends the use on
+     *  both sides with nothing loosed. The key stays down for that tick; let go in the same tick, the shot would fly. */
+    private void lower(){
+        var me=mc.thePlayer;
+        if(phaseTicks++==0){weaponSlot=me.inventory.currentItem;me.inventory.currentItem=(weaponSlot+1)%9;mc.playerController.updateController();rest(Set.of(mc.gameSettings.keyBindUseItem.getKeyCode()));return;}
+        me.inventory.currentItem=weaponSlot;mc.playerController.updateController();shotPhase=0;phaseTicks=0;blind=0;phase="lowered";rest(Set.of());
+    }
+    /** The local player's eye: its client copy's own eye height is an offset from its stance, not from its feet. */
+    private double eyeY(){return mc.thePlayer.getPosition(1).yCoord;}
+    private double aimY(Entity e,boolean shot){var b=e.boundingBox;return b.minY+(b.maxY-b.minY)*(aimHeight>=0?aimHeight:shot?.6:.2);}
+    private double moved(){var me=mc.thePlayer;double x=me.posX-ax,y=me.boundingBox.minY-ay,z=me.posZ-az;return Math.sqrt(x*x+y*y+z*z);}
+    private static double round(double v){return Math.round(v*10)/10.0;}
+    /** What a swing lands on: the entity, or for one made of parts (the game takes hits on those alone) the part nearest the eye. */
+    private Entity nearest(Entity e){
+        Entity[] parts=e.getParts();if(parts==null||parts.length==0)return e;
+        Entity best=parts[0];for(Entity p:parts)if(boxReach(p)<boxReach(best))best=p;
+        return best;
+    }
+    private double reach(Entity e){return boxReach(nearest(e));}
+    /** Eye to the nearest point of the box, which is what the server measures a hit by. */
+    private double boxReach(Entity e){
+        var me=mc.thePlayer;var b=e.boundingBox;double ex=me.posX,ey=eyeY(),ez=me.posZ;
         double dx=Math.max(Math.max(b.minX-ex,0),ex-b.maxX),dy=Math.max(Math.max(b.minY-ey,0),ey-b.maxY),dz=Math.max(Math.max(b.minZ-ez,0),ez-b.maxZ);
         return Math.sqrt(dx*dx+dy*dy+dz*dz);
     }
+    /**
+     * A swarm's target, each tick: the nearest in reach, else the one it is going to while no other is two blocks nearer,
+     * else the nearest of the pack; never one it has passed over.
+     */
+    private Entity swarmTarget(Entity current){
+        var me=mc.thePlayer;
+        // One of a kind kept away from, within 6 blocks, first: met at arm's length before it is beside you.
+        Entity kept=pack().stream().filter(e->!passed(e)&&keepAway.test(e)&&e.getDistanceToEntity(me)<=6).findFirst().orElse(null);if(kept!=null)return kept;
+        Entity inReach=hostiles(REACH+2).stream().filter(e->!passed(e)&&reach(e)<=REACH).findFirst().orElse(null);
+        if(inReach!=null)return inReach;
+        List<Entity> all=pack().stream().filter(e->!passed(e)).toList();if(all.isEmpty())return null;
+        if(current!=null&&!dead(current)&&all.contains(current)&&current.getDistanceToEntity(me)<all.get(0).getDistanceToEntity(me)+2)return current;
+        return all.get(0);
+    }
+    /** A swarm's mobs, nearest first: the hostiles in sight within 16 blocks, and of those within 32 when it began, the ones in sight or within 16. */
+    private List<Entity> pack(){
+        var me=mc.thePlayer;List<Entity> out=new ArrayList<>(hostiles(SIGHT));
+        for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&present.contains(e.getEntityId())&&!out.contains(e)&&!dead(e)&&hostile.test(e)&&e.getDistanceToEntity(me)<=32&&(e.getDistanceToEntity(me)<=SIGHT||me.canEntityBeSeen(e)))out.add(e);
+        out.sort(Comparator.comparingDouble(e->e.getDistanceSqToEntity(me)));return out;
+    }
+    /** Of the hostiles within 32 blocks when the fight began, how many are still alive and loaded, and the nearest's
+     *  distance; and how many of the monster rule in sight are not after you, which hostile by behaviour leaves alone. */
+    private String remaining(){
+        var me=mc.thePlayer;List<Double> far=new ArrayList<>();
+        for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&present.contains(e.getEntityId())&&!dead(e)&&hostile.test(e))far.add((double)e.getDistanceToEntity(me));
+        String left=far.isEmpty()?"":": "+far.size()+" of the hostiles within 32 blocks when it began still alive, none in sight within 32 nor within 16, the nearest "+round(Collections.min(far))+" blocks off";
+        int calm=byBehaviour?matching(e->monster.test(e)&&!hostile.test(e),SIGHT).size():0;
+        return calm==0?left:left+(left.isEmpty()?": ":"; ")+calm+" of the monster rule in sight within 16 not after you, left alone";
+    }
+    /** The server's word on who is after you, if one has come in the last two seconds. */
+    private void refresh(){
+        int[] now=Engaged.latest(2000);informed=now!=null;if(now!=null){engaged.clear();for(int id:now)engaged.add(id);}
+        var me=mc.thePlayer;Map<Integer,Double> next=new HashMap<>();
+        for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&e!=me&&e.getDistanceToEntity(me)<=16&&monster.test(e)){
+            double dx=me.posX-e.posX,dz=me.posZ-e.posZ,d=Math.hypot(dx,dz),step=d>0?((e.posX-e.prevPosX)*dx+(e.posZ-e.prevPosZ)*dz)/d:0;
+            next.put(e.getEntityId(),toward.getOrDefault(e.getEntityId(),0.0)*29/30+Math.max(-1,Math.min(1,step)));
+        }
+        toward.clear();toward.putAll(next);
+    }
+    /**
+     * After you: the server says so (you are its target, or it hurt you last), or this fight hit it. Of the monster rule, one
+     * steadily coming at you is (two blocks of its own going in about a second and a half: your walking does not count), and
+     * one out of your sight is taken to be until it shows otherwise; one in sight and not after you is minding its own business.
+     * With no word from the server for a second, the monster rule stands in.
+     */
+    private String why(Entity e){
+        int id=e.getEntityId();if(!swarm&&named!=null&&named.test(e))return "named";if(!byBehaviour)return "the hostile rule";
+        if(struck.contains(id))return "hit by you";if(informed&&engaged.contains(id))return "after you, by the server's word";
+        if(!monster.test(e))return "named";if(toward.getOrDefault(id,0.0)>=2)return "coming at you";
+        return informed?"out of sight":"the monster rule, no word from the server";
+    }
+    private boolean provoked(Entity e){
+        int id=e.getEntityId();if(struck.contains(id)||informed&&engaged.contains(id))return true;
+        return monster.test(e)&&(toward.getOrDefault(id,0.0)>=2||(informed?!mc.thePlayer.canEntityBeSeen(e):ticks>20));
+    }
+    /**
+     * Each tick, of the mobs close by: how long each has stood still, and whether one went off beside you, gone from the
+     * world with health left within 5 blocks as you lost health. Its kind is kept away from after that (one that killed you too).
+     */
+    private void watch(){
+        var me=mc.thePlayer;
+        for(var n:lastNear.entrySet()){Entity e=mc.theWorld.getEntityByID(n.getKey());if((e==null||e.isDead)&&(float)n.getValue()[1]>0)vanished.add(new Object[]{n.getValue()[0],ticks});}
+        vanished.removeIf(v->ticks-(int)v[1]>3);
+        felt[ticks%4]=me.getHealth();float most=0;for(float f:felt)most=Math.max(most,f);
+        if(most-me.getHealth()>0){for(Object[] v:vanished)wentOff.add((String)v[0]);vanished.clear();}
+        lastNear.clear();Map<Integer,double[]> now=new HashMap<>();
+        for(Entity e:close){
+            if(e instanceof EntityLivingBase l&&e.getDistanceToEntity(me)<=5)lastNear.put(e.getEntityId(),new Object[]{type(e),l.getHealth()});
+            double[] s=still.get(e.getEntityId());boolean same=s!=null&&Math.abs(s[0]-e.posX)<.02&&Math.abs(s[1]-e.posY)<.02&&Math.abs(s[2]-e.posZ)<.02;
+            now.put(e.getEntityId(),new double[]{e.posX,e.posY,e.posZ,same?s[3]+1:0});
+        }
+        still.clear();still.putAll(now);
+    }
+    /** The nearest one kept away from that has stood still for 4 ticks within 4 blocks; once run from, until it is 8 blocks off or comes at you again. */
+    private Entity lit(){
+        var me=mc.thePlayer;
+        for(Entity e:close){double[] s=still.get(e.getEntityId());float d=e.getDistanceToEntity(me);
+            if(keepAway.test(e)&&(s!=null&&s[3]>=4&&d<=4||running.contains(e.getEntityId())&&d<=8&&!comingAt(e))){running.add(e.getEntityId());return e;}}
+        running.clear();return null;
+    }
+    /** It moved nearer you this tick by more than 0.03 blocks of its own going (a mob walks about 0.1 a tick). */
+    private boolean comingAt(Entity e){
+        var me=mc.thePlayer;double dx=me.posX-e.posX,dz=me.posZ-e.posZ,d=Math.hypot(dx,dz);
+        return d>0&&((e.posX-e.prevPosX)*dx+(e.posZ-e.prevPosZ)*dz)/d>.03;
+    }
+    /**
+     * A swing would land: in sight eye to eye (the server takes a hit from 6 blocks then), or else within 3 blocks with
+     * nothing between your eye and where the crosshair rests on it (the server takes an unseen hit from 3), as legs seen
+     * under a low roof are.
+     */
+    private boolean touchable(Entity e){
+        var me=mc.thePlayer;if(me.canEntityBeSeen(e))return true;
+        double dx=e.posX-me.posX,dy=e.posY-me.boundingBox.minY,dz=e.posZ-me.posZ;if(dx*dx+dy*dy+dz*dz>=9)return false;
+        return mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(e.posX,aimY(e,false),e.posZ))==null;
+    }
+    private boolean passed(Entity e){Integer until=passedUntil.get(e.getEntityId());return until!=null&&ticks<until;}
+    private String describe(Entity e){var me=mc.thePlayer;return type(e)+" (entity "+e.getEntityId()+") "+round(e.getDistanceToEntity(me))+" blocks off, "+round(e.boundingBox.minY-me.boundingBox.minY)+" above your feet";}
+    private static String type(Entity e){return String.valueOf(net.minecraft.entity.EntityList.getEntityString(e));}
     private static boolean dead(Entity e){return e.isDead||e instanceof EntityLivingBase l&&l.getHealth()<=0;}
-    private List<Entity> close(){return matching(e->e instanceof EntityCreeper||hostile.test(e),8);}
+    private List<Entity> close(){return matching(e->e instanceof EntityLivingBase&&!(e instanceof EntityPlayer)&&(monster.test(e)||hostile.test(e)||keepAway.test(e)),8);}
     /** Entities of the hostile rule the player can see within `radius`, nearest first: out of this tick's pass up to 8 blocks. */
     private List<Entity> hostiles(double radius){
         if(radius>8)return matching(hostile,radius);
@@ -190,7 +448,7 @@ final class FightJob implements Navigation.Job {
         var me=mc.thePlayer;List<Entity> out=new ArrayList<>();
         // Distance first: it is arithmetic, where the rule may walk a class's ancestry and sight traces a ray.
         for(Object value:mc.theWorld.loadedEntityList)
-            if(value instanceof Entity e&&e!=me&&!dead(e)&&e.getDistanceToEntity(me)<=radius&&rule.test(e)&&me.canEntityBeSeen(e))out.add(e);
+            if(value instanceof Entity e&&e!=me&&!dead(e)&&e.getDistanceToEntity(me)<=radius&&rule.test(e)&&touchable(e))out.add(e);
         out.sort(Comparator.comparingDouble(e->e.getDistanceSqToEntity(me)));return out;
     }
     private void rangedTick(Entity t){
@@ -200,7 +458,20 @@ final class FightJob implements Navigation.Job {
         if(lastHealth>=0&&health>=0&&health<lastHealth&&shots>0)hits++;
         lastHealth=health;
         double distance=me.getDistanceToEntity(t);boolean sight=me.canEntityBeSeen(t);
-        if((!sight||distance>maxRange)&&shotPhase==0&&!hold){phase="closing";phaseTicks=0;engine.tickStart();return;}
+        // A weapon already drawn is not dropped, which would loose it unaimed: in sight it is shot from here, whatever the
+        // range; out of sight it is held a second for the target to show again, then let down unfired.
+        if(drawn()&&!sight){
+            phase="no_line_of_sight";
+            if(++blind<20){rest(Set.of(use));return;}
+            shotPhase=4;phaseTicks=0;lower();return;
+        }
+        blind=0;
+        if((!sight||distance>maxRange)&&shotPhase==0&&!drawn()&&!hold){
+            // In sight and no nearer after three seconds of walking (it is up a pillar, across a gap, in the air): shoot from here.
+            if(distance<nearestSeen-.5){nearestSeen=distance;stalled=0;}
+            if(sight&&distance<=96&&++stalled>=60){double to=Math.ceil(distance)+2;adjust("maxRange",maxRange,to,"closing got no nearer for three seconds: shooting from here");maxRange=to;stalled=0;}
+            else{phase="closing";phaseTicks=0;eyes(t,true);engine.tickStart();return;}
+        }
         Set<Integer> keys=new LinkedHashSet<>();
         if(sight)aimBallistic(t);
         if(distance<minRange&&clearBehind())keys.add(game.keyBindBack.getKeyCode());
@@ -209,18 +480,21 @@ final class FightJob implements Navigation.Job {
             case 0->{
                 if(!sight){phaseTicks=0;phase="no_line_of_sight";break;}
                 phase="drawing";keys.add(use);
-                if(phaseTicks==1)mc.playerController.sendUseItem(me,mc.theWorld,me.getHeldItem());
-                if(phaseTicks>=drawTicks){shotPhase=1;phaseTicks=0;} // the use key is left out from the next tick on: that is the release
+                if(phaseTicks==1){loaded=wear(me.getHeldItem());shotCounted=false;mc.playerController.sendUseItem(me,mc.theWorld,me.getHeldItem());}
+                if(phaseTicks>=drawTicks){shotPhase=1;phaseTicks=0;watchUntil=ticks+12;} // the use key is left out from the next tick on: that is the release
             }
             case 1->{
                 phase="released";
-                if(clickAfterLoad&&phaseTicks>=3){shotPhase=2;phaseTicks=0;}
-                else if(phaseTicks>=10){if(clickAfterLoad)dud();else{clickAfterLoad=true;shotPhase=2;phaseTicks=0;adjust("clickAfterLoad",false,true,"nothing flew on release; perhaps it only loaded");}}
+                if(phaseTicks>=(clickAfterLoad?3:10)){
+                    if(wore())countShot();
+                    else if(clickAfterLoad){shotPhase=2;phaseTicks=0;}
+                    else{clickAfterLoad=true;shotPhase=2;phaseTicks=0;adjust("clickAfterLoad",false,true,"nothing flew on release; perhaps it only loaded");}
+                }
             }
             case 2->{
                 phase="firing";
-                if(phaseTicks==1)mc.playerController.sendUseItem(me,mc.theWorld,me.getHeldItem());
-                if(phaseTicks<=2)keys.add(use);else if(phaseTicks>=12)dud();
+                if(phaseTicks==1){watchUntil=ticks+12;mc.playerController.sendUseItem(me,mc.theWorld,me.getHeldItem());}
+                if(phaseTicks<=2)keys.add(use);else if(phaseTicks>=12){if(wore())countShot();else dud();}
             }
             default->{phase="reloading";if(phaseTicks>=reloadTicks){shotPhase=0;phaseTicks=0;}}
         }
@@ -234,17 +508,27 @@ final class FightJob implements Navigation.Job {
         adjust("drawTicks",before,drawTicks,"nothing flew: wind longer next time, at most 100 ticks");
         if(duds>=3)finish("failed","no_projectile_fired: out of ammunition, or this weapon is not used by holding, releasing or clicking");
     }
-    /** Whatever new entity that is not a living one appears beside the player just after a release or click, flying away
-     *  from it, is this shot, of whatever class a mod gives it (the receipt names it); follow it to learn how the weapon flies. */
+    /** The weapon in hand as a shot changes it: a launcher wears, a throwable is one fewer. */
+    private static String wear(net.minecraft.item.ItemStack s){return s==null?"":net.minecraft.item.Item.itemRegistry.getNameForObject(s.getItem())+"|"+s.getItemDamage()+"|"+s.stackSize;}
+    /** Nothing was seen to fly, yet the weapon wore or a throwable left the hand: it went. */
+    private boolean wore(){return !shotCounted&&!wear(mc.thePlayer.getHeldItem()).equals(loaded);}
+    /** A shot left the hand, after a release or after a click: that is how this weapon is used, and the cycle goes on to reloading. */
+    private void countShot(){
+        boolean clicked=shotPhase==2;
+        if(clickAfterLoad!=clicked)adjust("clickAfterLoad",clickAfterLoad,clicked,"the shot flew after "+(clicked?"a click":"a release"));
+        shots++;duds=0;shotCounted=true;clickAfterLoad=clicked;shotPhase=3;phaseTicks=0;lastUseful=ticks;
+    }
+    /** Whatever new entity that is not a living one appears near the player in the half second after a release or click,
+     *  flying away from it, is this shot, of whatever class a mod gives it (the receipt names it); follow it to learn how
+     *  the weapon flies. A fast shot's first client tick is already blocks from the hand, so near is 12 blocks. */
     private void watchShot(){
-        var me=mc.thePlayer;
+        var me=mc.thePlayer;boolean window=ticks<=watchUntil;
         for(Object o:mc.theWorld.loadedEntityList){
             Entity e=(Entity)o;
             if(e instanceof EntityLivingBase||!seenEntities.add(e.getEntityId()))continue;
             double away=e.motionX*(e.posX-me.posX)+e.motionY*(e.posY-me.posY)+e.motionZ*(e.posZ-me.posZ);
-            if((shotPhase==1||shotPhase==2)&&tracked==null&&e.getDistanceToEntity(me)<4&&away>0&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
-                if(clickAfterLoad!=(shotPhase==2))adjust("clickAfterLoad",clickAfterLoad,shotPhase==2,"the shot flew after "+(shotPhase==2?"a click":"a release"));
-                tracked=e;shots++;duds=0;clickAfterLoad=shotPhase==2;shotPhase=3;phaseTicks=0;lastUseful=ticks;shotKinds.add(e.getClass().getName());
+            if(window&&tracked==null&&e.getDistanceToEntity(me)<12&&away>0&&e.motionX*e.motionX+e.motionY*e.motionY+e.motionZ*e.motionZ>.09){
+                tracked=e;shotKinds.add(e.getClass().getName());if(!shotCounted)countShot();
             }
         }
         if(tracked==null)return;
@@ -262,18 +546,26 @@ final class FightJob implements Navigation.Job {
         return new double[]{x<far?-1e9:y,t};
     }
     private void aimBallistic(Entity t){
-        var me=mc.thePlayer;double ex=me.posX,ey=me.boundingBox.minY+me.getEyeHeight()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
+        var me=mc.thePlayer;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
         for(int pass=0;pass<2;pass++){ // second pass leads the target by where it will be when the shot arrives
             dx=t.posX+(t.posX-t.prevPosX)*flight-ex;dz=t.posZ+(t.posZ-t.prevPosZ)*flight-ez;
-            double far=Math.sqrt(dx*dx+dz*dz),up=t.boundingBox.minY+t.height*.6-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
+            double far=Math.sqrt(dx*dx+dz*dz),up=aimY(t,true)+(t.posY-t.prevPosY)*flight-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
             for(int i=0;i<18;i++){angle=(lo+hi)/2;double[] r=fly(angle,far);flight=r[1];if(r[0]<up)lo=angle;else hi=angle;}
         }
         me.rotationYaw=(float)(Math.toDegrees(Math.atan2(dz,dx))-90);me.rotationPitch=(float)-Math.toDegrees(angle);
     }
     /** One step back is somewhere to stand: floor under it, room in it, no fluid. */
-    private boolean clearBehind(){
-        var me=mc.thePlayer;double yaw=Math.toRadians(me.rotationYaw);
-        int x=(int)Math.floor(me.posX+Math.sin(yaw)*1.3),y=(int)Math.floor(me.boundingBox.minY+.01),z=(int)Math.floor(me.posZ-Math.cos(yaw)*1.3);
+    private boolean clearBehind(){return standable(mc.thePlayer.rotationYaw+180,1.3);}
+    /** The heading to run on from a mob: straight away, else up to 90 degrees off it, with two blocks to stand on ahead; null if none. */
+    private Float escape(Entity from){
+        var me=mc.thePlayer;float away=(float)(Math.toDegrees(Math.atan2(me.posZ-from.posZ,me.posX-from.posX))-90);
+        for(float off:new float[]{0,35,-35,70,-70,90,-90})if(standable(away+off,1.3)&&standable(away+off,2.3))return away+off;
+        return null;
+    }
+    /** The cell that far ahead on that heading has a floor, room for feet and head, and no fluid. */
+    private boolean standable(float yaw,double far){
+        var me=mc.thePlayer;double r=Math.toRadians(yaw);
+        int x=(int)Math.floor(me.posX-Math.sin(r)*far),y=(int)Math.floor(me.boundingBox.minY+.01),z=(int)Math.floor(me.posZ+Math.cos(r)*far);
         var w=mc.theWorld;
         return w.getBlock(x,y-1,z).getMaterial().isSolid()&&!w.getBlock(x,y,z).getMaterial().blocksMovement()&&!w.getBlock(x,y,z).getMaterial().isLiquid()&&!w.getBlock(x,y+1,z).getMaterial().blocksMovement();
     }
@@ -288,13 +580,13 @@ final class FightJob implements Navigation.Job {
     @Override public Map<String,Object> status(){
         var out=new LinkedHashMap<String,Object>();var me=mc.thePlayer;
         out.put("action","fight");out.put("swarm",swarm);out.put("state",state);out.put("reason",reason);out.put("phase",phase);out.put("ticks",ticks);
-        out.put("attacks",attacks);out.put("criticalHits",crits);out.put("kills",kills);
+        out.put("attacks",attacks);out.put("criticalHits",crits);out.put("kills",kills);if(aside>0)out.put("struckAside",aside);if(passedOver>0)out.put("passedOver",passedOver);out.put("taken",taken);
         if(shots>0||ranged||!adjustments.isEmpty()){out.put("shots",shots);out.put("hitsObserved",hits);out.put("weapon",weaponKey);
             out.put("ballistics",Map.of("speed",speed,"gravity",gravity,"drag",drag,"drawTicks",drawTicks,"reloadTicks",reloadTicks,"clickAfterLoad",clickAfterLoad));
             out.put("adjustments",adjustments);out.put("shotEntities",List.copyOf(shotKinds));
             out.put("tracks",tracks.stream().map(t->t.stream().map(s->List.of(s[0],s[1])).toList()).toList());} // per shot, per tick: [horizontal speed, vertical speed]
         if(me==player){
-            out.put("health",me.getHealth());
+            out.put("health",me.getHealth());out.put("movedFromStart",round(moved()));out.put("leash",round(leash));
             Map<String,Object> t=null;
             if(target!=null){t=new LinkedHashMap<>();t.put("entityId",target.getEntityId());t.put("type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(target)));t.put("class",target.getClass().getName());
                 t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);}
@@ -303,7 +595,9 @@ final class FightJob implements Navigation.Job {
             out.put("hostilesInSight",hostiles(16).stream().map(e->Map.of("entityId",e.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(e)),"distance",Math.round(e.getDistanceToEntity(me)*10)/10.0)).toList());
         }
         if(!failure.isEmpty())out.put("failure",failure);
-        out.put("hostileRule",hostileRule);out.put("jobSettings",jobSettings);
+        out.put("hostileRule",hostileRule);out.put("hostileBy",!byBehaviour?"rule":informed?"behaviour: after you by the server's word, or hit by you":"the monster rule: no word from the server");
+        if(!keepAwayRule.isEmpty())out.put("keepAwayRule",keepAwayRule);if(!wentOff.isEmpty())out.put("wentOff",List.copyOf(wentOff));
+       out.put("jobSettings",jobSettings);
         out.put("controlOwned",!done()&&lease.isActive());out.put("scope",scope);return out;
     }
 }
