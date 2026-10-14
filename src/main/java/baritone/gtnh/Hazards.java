@@ -39,8 +39,7 @@ final class Hazards {
         else if((hold=counter(me,true))!=null){keys=hold.keys();yaw=hold.yaw();why="held_against_a_hit";}
         if(keys==null){release();return;}
         if(lease==null||!lease.isActive()){
-            navigation.cancel(why);var arbiter=ControlRegistry.controls().arbiter();arbiter.revoke(why);
-            lease=arbiter.acquire("hazard",r->{});
+            navigation.cancel(why);lease=ControlRegistry.controls().arbiter().acquire("hazard",r->{},why); // whoever held them is told why
         }
         if(yaw!=null){me.rotationYaw=yaw;lease.look(yaw,me.rotationPitch);}
         lease.setKeys(keys);
