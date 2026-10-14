@@ -621,12 +621,13 @@ final class FightJob implements Navigation.Job {
         }
         return true;
     }
-    /** What a shot flying from a to b strikes other than `t` or a part of it: anything it collides with, its box grown by 0.3 as the game grows it for a projectile. */
+    /** What a shot flying from a to b strikes other than `t` or a part of it: anything alive it collides with, its box grown by 0.3 as the game grows it
+     *  for a projectile. Not what is not alive: a projectile coming at you lies on the line of fire, and a shot into it costs only the arrow. */
     private Entity struck(Entity t,Vec3 a,Vec3 b){
         var parts=t.getParts()==null?List.<Entity>of():Arrays.asList(t.getParts());
         var box=net.minecraft.util.AxisAlignedBB.getBoundingBox(Math.min(a.xCoord,b.xCoord),Math.min(a.yCoord,b.yCoord),Math.min(a.zCoord,b.zCoord),Math.max(a.xCoord,b.xCoord),Math.max(a.yCoord,b.yCoord),Math.max(a.zCoord,b.zCoord)).expand(1,1,1);
         for(Object o:mc.theWorld.getEntitiesWithinAABBExcludingEntity(mc.thePlayer,box)){var e=(Entity)o;
-            if(e!=t&&!parts.contains(e)&&e.canBeCollidedWith()&&e.boundingBox.expand(.3,.3,.3).calculateIntercept(a,b)!=null)return e;}
+            if(e!=t&&!parts.contains(e)&&e instanceof net.minecraft.entity.EntityLivingBase&&e.canBeCollidedWith()&&e.boundingBox.expand(.3,.3,.3).calculateIntercept(a,b)!=null)return e;}
         return null;
     }
     /** One step back is somewhere to stand: floor under it, room in it, no fluid. */
