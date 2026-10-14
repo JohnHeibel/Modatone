@@ -61,16 +61,19 @@ final class Hazards {
     }
     /**
      * Thrown by a hit toward a drop of 4 or more, or into what burns, within 3 blocks: the movement keys against the throw
-     * until the ground (a plain hit throws you about 2 blocks; air control takes back about 1), then a crouch while still
-     * sliding toward it, which the game keeps from walking off an edge. With steer (nothing else holds the view): faced
+     * until the ground (a plain hit throws you about 2 blocks; air control takes back about 1) or until the feet are below
+     * the floor it came from (air control cannot climb back: the controls are left to whatever else might), then a crouch
+     * while still sliding toward it, which the game keeps from walking off an edge. With steer (nothing else holds the view): faced
      * away from the throw and running against it, and once down, walking on until the drop is over 2 blocks off or as far
      * as the one behind, beyond the reach of the next hit's throw. Null when there is nothing to hold against.
      */
     static Hold counter(EntityPlayer me,boolean steer){
         double vx=me.motionX,vz=me.motionZ,v=Math.hypot(vx,vz),ahead;
         if(thrown<0&&sinceJolt<=2&&me.hurtTime>=7&&groundY!=Integer.MIN_VALUE&&v>1e-3&&dropAt(me,vx/v,vz/v)<=3){thrown=0;tx=vx/v;tz=vz/v;}
-        if(thrown>=0&&(me.isInWater()||me.handleLavaMovement()||me.isOnLadder()||me.onGround&&thrown>1||thrown>60)){thrown=-1;footing=me.onGround?20:0;}
-        if(thrown>=0){thrown++;return v<1e-3?against(me,-tx,-tz,steer,false):against(me,-vx/v,-vz/v,steer,false);}
+        if(thrown>=0&&(me.isInWater()||me.handleLavaMovement()||me.isOnLadder()||me.onGround&&thrown>1||thrown>60||me.boundingBox.minY<groundY-.25)){thrown=-1;footing=me.onGround?20:0;}
+        // Against the throw, not against the motion: once air control wins the motion turns, and keys that turned with it
+        // would carry you back toward the drop (found and fixed by the playing agent, fortress trial 5).
+        if(thrown>=0){thrown++;return against(me,-tx,-tz,steer,false);}
         boolean sliding=vx*tx+vz*tz>.01;
         if(footing>0&&me.onGround&&(sliding||steer&&(ahead=dropAt(me,tx,tz))<=2&&ahead<dropAt(me,-tx,-tz))){footing--;return against(me,-tx,-tz,steer,sliding);}
         footing=0;return null;
