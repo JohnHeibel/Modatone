@@ -24,7 +24,8 @@ import static baritone.gtnh.pathing.WorkSpec.*;
  * its target, or it hurt you last) or because this fight hit it, and of the monster rule one steadily coming at you or out
  * of sight: a behaviour, never a kind of mob. A caller's rule replaces it.
  * Out of reach the source FollowProcess paths to the target; in reach the engine rests and this aims, blocks with a
- * sword between swings and lands each swing while falling (a critical hit). It ends, as a failure so that the
+ * sword between swings, lands a swing at one standing still while falling (a critical hit) and one at one coming at you
+ * running (it goes twice as far). It ends, as a failure so that the
  * actionFailed guard pauses the world, as soon as the fight is no longer the one that was asked for.
  */
 final class FightJob implements Navigation.Job {
@@ -68,7 +69,7 @@ final class FightJob implements Navigation.Job {
     private Entity target;
     // One pass over the loaded entities a tick: the monster rule's, the hostile and the kept-away in sight within 8, nearest first.
     private List<Entity> close=List.of();
-    private int ticks,lastAttack=-100,lastUseful,attacks,crits,kills,clearTicks,outOfReach;
+    private int ticks,lastAttack=-100,runFrom=-200,swingSlot=-1,lastUseful,attacks,crits,runningHits,kills,clearTicks,outOfReach,heldAgainst;
     // Ranged: nothing here knows a weapon. How it is used is found by trying (hold and release; if nothing flies, click); how
     // its projectile flies comes in as numbers, and each shot's velocity samples go back out for the caller to fit them from.
     private boolean ranged;
@@ -125,6 +126,7 @@ final class FightJob implements Navigation.Job {
             minRange=number(asked,"minRange",6,0,32);maxRange=number(asked,"maxRange",20,4,96);
             for(Object o:mc.theWorld.loadedEntityList)seenEntities.add(((Entity)o).getEntityId());
         }
+        swingSlot=ranged?meleeSlot==null?-1:meleeSlot:me.inventory.currentItem;
         var settings=Baritone.settings();
         for(var s:List.of(settings.allowBreak,settings.allowPlace,settings.followRadius,settings.followOffsetDistance))saved.put(s,s.value);
         engine.getPathingBehavior().forceCancel();engine.snags.reset();initialCalculations=engine.getPathingBehavior().calculationsStarted();
@@ -168,9 +170,11 @@ final class FightJob implements Navigation.Job {
 
         // Standing in what burns (the game's own test: fire or lava in the box, or a block a mod says is burning), a step
         // out of it comes first, to the nearest side with somewhere to stand that does not burn. A drawn weapon stays drawn.
-        if(me.onGround&&burns(me.boundingBox)){Float out=outOfFire();
-            if(out!=null){phase="out_of_fire";me.rotationYaw=out;var game=mc.gameSettings;Set<Integer> keys=new LinkedHashSet<>(List.of(game.keyBindForward.getKeyCode()));
-                if(drawn())keys.add(game.keyBindUseItem.getKeyCode());rest(keys);return;}}
+        if(Hazards.hurtsToStand(me)){Float out=Hazards.outOfFire(me);
+            if(out!=null){phase="out_of_fire";me.rotationYaw=out;Set<Integer> keys=Hazards.stepKeys(me,out);
+                if(drawn())keys.add(mc.gameSettings.keyBindUseItem.getKeyCode());rest(keys);return;}}
+        // Thrown by a hit toward a drop: the keys against the throw until the ground, and a crouch while sliding on (Hazards).
+        {var back=Hazards.counter(me,false);if(back!=null){if(!phase.equals("held_against_a_hit"))heldAgainst++;phase="held_against_a_hit";rest(back.keys());return;}}
         if(shotPhase==4){lower();return;}
         if(target!=null&&dead(target)&&drawn()){shotPhase=4;phaseTicks=0;lower();return;}
         if(target!=null&&dead(target)){
@@ -224,6 +228,8 @@ final class FightJob implements Navigation.Job {
         if(ranged){rangedTick(target);return;}
         Entity body=nearest(target);double far=boxReach(body);
         boolean inReach=far<=REACH&&touchable(body);
+        // The engine puts blocks in hand to build its way to the target: in reach, the weapon is back in hand a tick before a swing.
+        if(inReach&&swingSlot>=0&&me.inventory.currentItem!=swingSlot){me.inventory.currentItem=swingSlot;mc.playerController.updateController();rest(Set.of());return;}
         Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;int since=ticks-lastAttack;
         // One kept away from that stands still close by is getting ready: a sprint away from it onto somewhere to stand, until
         // it is 8 blocks off or comes at you again. With nowhere to go, a swing when one is ready, where it is.
@@ -240,7 +246,7 @@ final class FightJob implements Navigation.Job {
         Entity kept=hold?null:close.stream().filter(e->keepAway.test(e)&&touchable(e)&&e.getDistanceToEntity(me)<3.5).findFirst().orElse(null);
         if(kept!=null){
             Entity part=nearest(kept);Float away=since>=interval&&boxReach(part)<=REACH?null:escape(kept);
-            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);strike(part,false);rest(keys);return;}
+            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);if(!runningIn(keys)){strike(part,false);rest(keys);}return;}
             if(away!=null){phase="arms_length";me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return;}
         }
         // A swarm passes over a mob it cannot get at (three seconds beside it out of reach, or five without a hit since it
@@ -274,18 +280,31 @@ final class FightJob implements Navigation.Job {
         outOfReach=0;
         aim(body);
         phase=struckAside?"striking_aside":inReach?"striking":"holding";
+        boolean falling=!me.onGround&&me.fallDistance>0&&!me.isInWater()&&!me.isOnLadder();
+        boolean timed=crit&&!comingAt(target)&&!keepAway.test(target); // one coming at you is hit the moment it is in reach: the knockback is worth more than the crit
+        if(!timed&&inReach&&since>=interval&&runningIn(keys))return;
         var held=me.getHeldItem();
         if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){
             keys.add(game.keyBindUseItem.getKeyCode());
             if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held); // a held key keeps the block up; it does not raise it
         }
-        boolean falling=!me.onGround&&me.fallDistance>0&&!me.isInWater()&&!me.isOnLadder();
-        boolean timed=crit&&!comingAt(target)&&!keepAway.test(target); // one coming at you is hit the moment it is in reach: the knockback is worth more than the crit
         if(timed&&inReach&&me.onGround&&since>=interval-6)keys.add(game.keyBindJump.getKeyCode());
         if(inReach&&since>=interval&&(!timed||falling||since>=interval+10)){strike(body,falling);if(struckAside)aside++;}
         rest(keys);
     }
+    /**
+     * A swing made running carries the run's knockback: the game adds a level for a sprinting hit, and the mob goes about
+     * twice as far (some 6 blocks rather than 3). So first a tick or two of forward and sprint, the sword lowered; not when
+     * holding ground, already running, too hungry to run, or with no floor a block ahead. True while that step is being taken.
+     */
+    private boolean runningIn(Set<Integer> keys){
+        var me=mc.thePlayer;var game=mc.gameSettings;
+        if(hold||me.isSprinting()||me.getFoodStats().getFoodLevel()<=6||runFrom>=lastAttack&&ticks-runFrom>2||!standable(me.rotationYaw,1))return false;
+        if(runFrom<lastAttack)runFrom=ticks;
+        keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return true;
+    }
     private void strike(Entity body,boolean falling){
+        if(mc.thePlayer.isSprinting())runningHits++;
         mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());passedUntil.remove(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
     }
     /** The engine does not tick here, so its keys and any block it was breaking are let go and ours are published. */
@@ -598,36 +617,14 @@ final class FightJob implements Navigation.Job {
         for(float off:new float[]{0,35,-35,70,-70,90,-90})if(standable(away+off,1.3)&&standable(away+off,2.3))return away+off;
         return null;
     }
-    /** The heading to the nearest place up to 4 blocks off, from straight ahead round to behind, with somewhere to stand and
-     *  nothing burning, and floor all the way there (fire may be crossed, lava not); null if none. */
-    private Float outOfFire(){
-        var me=mc.thePlayer;
-        for(int far=1;far<=4;far++)for(float off:new float[]{0,45,-45,90,-90,135,-135,180}){float yaw=me.rotationYaw+off;double r=Math.toRadians(yaw);
-            int x=(int)Math.floor(me.posX-Math.sin(r)*far),y=(int)Math.floor(me.boundingBox.minY+.01),z=(int)Math.floor(me.posZ+Math.cos(r)*far);
-            boolean way=true;for(int d=1;d<=far&&way;d++)way=standable(yaw,d);
-            if(way&&!burns(net.minecraft.util.AxisAlignedBB.getBoundingBox(x,y,z,x+1,y+2,z+1)))return yaw;}
-        return null;
-    }
     /** How many of these could be at you at once: one queued behind a nearer one (within 30 degrees of it, seen from you)
      *  waits its turn, as in a doorway or a corridor; a pack that spreads round you counts in full. */
     private long atOnce(List<Entity> near){ var me=mc.thePlayer;
         return near.stream().filter(h->near.stream().noneMatch(g->g!=h&&g.getDistanceToEntity(me)<h.getDistanceToEntity(me)
             &&Math.abs(net.minecraft.util.MathHelper.wrapAngleTo180_double(Math.toDegrees(Math.atan2(g.posZ-me.posZ,g.posX-me.posX)-Math.atan2(h.posZ-me.posZ,h.posX-me.posX))))<30)).count(); }
-    /** What the game sets you alight by, in that box: fire or lava, or a block a mod says is burning. */
-    private boolean burns(net.minecraft.util.AxisAlignedBB b){
-        var w=mc.theWorld;
-        for(int x=(int)Math.floor(b.minX+.001);x<=(int)Math.floor(b.maxX-.001);x++)for(int y=(int)Math.floor(b.minY+.001);y<=(int)Math.floor(b.maxY-.001);y++)
-            for(int z=(int)Math.floor(b.minZ+.001);z<=(int)Math.floor(b.maxZ-.001);z++){
-                var block=w.getBlock(x,y,z);var m=block.getMaterial();
-                if(m==net.minecraft.block.material.Material.fire||m==net.minecraft.block.material.Material.lava||block.isBurning(w,x,y,z))return true;}
-        return false;
-    }
     /** The cell that far ahead on that heading has a floor, room for feet and head, and no fluid. */
     private boolean standable(float yaw,double far){
-        var me=mc.thePlayer;double r=Math.toRadians(yaw);
-        int x=(int)Math.floor(me.posX-Math.sin(r)*far),y=(int)Math.floor(me.boundingBox.minY+.01),z=(int)Math.floor(me.posZ+Math.cos(r)*far);
-        var w=mc.theWorld;
-        return w.getBlock(x,y-1,z).getMaterial().isSolid()&&!w.getBlock(x,y,z).getMaterial().blocksMovement()&&!w.getBlock(x,y,z).getMaterial().isLiquid()&&!w.getBlock(x,y+1,z).getMaterial().blocksMovement();
+        int[] c=Hazards.cell(mc.thePlayer,yaw,far);return Hazards.standable(mc.theWorld,c[0],(int)Math.floor(mc.thePlayer.boundingBox.minY+.01),c[1]);
     }
     private void finish(String state,String reason){
         if(done())return;this.state=state;this.reason=reason;
@@ -640,7 +637,7 @@ final class FightJob implements Navigation.Job {
     @Override public Map<String,Object> status(){
         var out=new LinkedHashMap<String,Object>();var me=mc.thePlayer;
         out.put("action","fight");out.put("swarm",swarm);out.put("state",state);out.put("reason",reason);out.put("phase",phase);out.put("ticks",ticks);
-        out.put("attacks",attacks);out.put("criticalHits",crits);out.put("kills",kills);if(aside>0)out.put("struckAside",aside);if(passedOver>0)out.put("passedOver",passedOver);out.put("taken",taken);
+        out.put("attacks",attacks);out.put("criticalHits",crits);out.put("runningHits",runningHits);out.put("kills",kills);if(aside>0)out.put("struckAside",aside);if(heldAgainst>0)out.put("heldAgainstThrows",heldAgainst);if(passedOver>0)out.put("passedOver",passedOver);out.put("taken",taken);
         if(shots>0||ranged||!adjustments.isEmpty()){out.put("shots",shots);out.put("hitsObserved",hits);out.put("weapon",weaponKey);
             out.put("ballistics",Map.of("speed",speed,"gravity",gravity,"drag",drag,"drawTicks",drawTicks,"reloadTicks",reloadTicks,"clickAfterLoad",clickAfterLoad));
             out.put("adjustments",adjustments);out.put("shotEntities",List.copyOf(shotKinds));

@@ -179,6 +179,7 @@ public final class BaritoneNavigation implements Navigation {
     void tick() {
         answerSearch();
         reference.getWorldProvider().tick();
+        Hazards.tick(this,active instanceof FightJob fight&&!fight.done());
         if(active!=null && !active.done()) {
             try { if(active instanceof BulkJob work){work.symptoms.sample(mc.thePlayer);work.tick();}else if(active instanceof RouteRun route) route.tick();else tickChild(active); }
             catch(Exception|LinkageError e) {failed(e);}
