@@ -17,7 +17,8 @@ It is four things: one class, one line, one test, one course case. `ElytraGlide`
 | The test | `mods/baritone/src/test/java/baritone/gtnh/moves/` | `ElytraGlideTest.java` |
 | The course case | `harness/smoke/` | `glide_course.py` |
 
-Nothing under `src/upstream` changes. The smallest whole move in the repo is `Leap` / `Leaping` in
+The glide changes nothing under `src/upstream`. A move that does not fit the search as it stands (one that ends a step
+in the air, say) changes it there: that code is ours to change too. The smallest whole move in the repo is `Leap` / `Leaping` in
 `MoveRegistryTest.java` (test sources, package `baritone.gtnh.pathing`): read it before the glide.
 
 A move that wears or uses an item the way a player does, through the keys a player has, is play. What the rules call
