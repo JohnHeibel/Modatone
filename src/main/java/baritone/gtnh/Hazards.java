@@ -33,7 +33,7 @@ final class Hazards {
         // A hit's throw is 0.4 a tick across, seen here after its first tick's ground friction (0.546): a jolt of 0.15 or
         // more that the player's own jump does not explain, with the hurt (counter) within a tick or two of it.
         sinceJolt=Math.hypot(me.motionX-lastX,me.motionZ-lastZ)>=.15&&!me.movementInput.jump?0:sinceJolt+1;lastX=me.motionX;lastZ=me.motionZ;
-        if(fighting){release();return;}
+        if(fighting||explicitRecovery(ControlRegistry.controls().arbiter().current().label())){release();return;}
         Set<Integer> keys=null;Float yaw=null;String why=null;Hold hold;
         if(hurtsToStand(me)&&(yaw=outOfFire(me))!=null){keys=stepKeys(me,yaw);why="stepped_out_of_fire";}
         else if((hold=counter(me,true))!=null){keys=hold.keys();yaw=hold.yaw();why="held_against_a_hit";}
@@ -45,6 +45,8 @@ final class Hazards {
         lease.setKeys(keys);
     }
     private static void release(){if(lease!=null){lease.close();lease=null;}}
+    /** An explicit input or interaction may be the way out when the automatic step cannot leave a pool. */
+    static boolean explicitRecovery(String owner){return "direct".equals(owner)||owner!=null&&owner.startsWith("interaction:");}
     /** The keys for a step out on that heading: forward, a jump when the first cell is a step up or you are in a pool, a run when fed enough to. */
     static Set<Integer> stepKeys(EntityPlayer me,float yaw){
         var game=mc.gameSettings;int[] next=cell(me,yaw,1);
