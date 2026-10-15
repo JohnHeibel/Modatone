@@ -59,6 +59,7 @@ final class FightJob implements Navigation.Job {
     private final Set<Integer> cameAt=new HashSet<>(),closing=new HashSet<>(); // who has come at you (struck aside), and who is coming now, half a block nearer than half a second ago (met, not walked to)
     private int aside;
     private final double bailHealth,maxHealthLoss,startHealth,ax,ay,az,aimHeight;
+    private final int targetPart;
     private final boolean leashGiven;
     private double leash;
     private Entity leashed;
@@ -112,6 +113,7 @@ final class FightJob implements Navigation.Job {
         maxHealthLoss=number(params,"maxHealthLoss",10,1,100);maxGrowth=integer(params,"maxGrowth",3,0,64);
         // Where on the target the crosshair rests, feet 0 to top 1. A swing lands wherever in reach it is aimed, so it looks low; a shot lands where it is aimed.
         aimHeight=params.containsKey("aimHeight")?number(params,"aimHeight",.6,0,1):-1;
+        targetPart=integer(params,"targetPart",-1,-1,63);
         var me=mc.thePlayer;ax=me.posX;ay=me.boundingBox.minY;az=me.posZ;startHealth=me.getHealth();Arrays.fill(felt,me.getHealth());refresh();close=close();
         for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&e!=me&&!dead(e)&&e.getDistanceToEntity(me)<=32&&(monster.test(e)||hostile.test(e)))present.add(e.getEntityId());
         // A pack in sight when the fight was chosen is part of it: closing in is what it was always going to do. Counted once the server has said who is after you.
@@ -372,9 +374,17 @@ final class FightJob implements Navigation.Job {
     private static double round(double v){return Math.round(v*10)/10.0;}
     /** What a swing lands on: the entity, or for one made of parts (the game takes hits on those alone) the part nearest the eye. */
     private Entity nearest(Entity e){
+        if(targetPart>=0&&e==target)return part(e,targetPart);
         Entity[] parts=e.getParts();if(parts==null||parts.length==0)return e;
         Entity best=parts[0];for(Entity p:parts)if(boxReach(p)<boxReach(best))best=p;
         return best;
+    }
+    /** A native part seen in obs.entities; an invalid index must never silently hit another part. */
+    static Entity part(Entity e,int index){
+        if(index<0)return e;
+        Entity[] parts=e.getParts();
+        if(parts==null||index>=parts.length||parts[index]==null)throw new IllegalArgumentException("no_such_part: "+index);
+        return parts[index];
     }
     private double reach(Entity e){return boxReach(nearest(e));}
     /** Eye to the nearest point of the box, which is what the server measures a hit by. */
@@ -599,22 +609,24 @@ final class FightJob implements Navigation.Job {
      *  Blocked at the usual height on the mob (cover to its waist, a lip over you), a higher point on it, then a lower, is tried. */
     private boolean aimBallistic(Entity t){
         double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};inTheWay=null;
-        for(double h:heights)if(aimAt(t,h))return true;
-        aimAt(t,heights[0]);return false;
+        Entity point=part(t,targetPart);
+        for(double h:heights)if(aimAt(t,point,h))return true;
+        aimAt(t,point,heights[0]);return false;
     }
     /** Cover may hide the eyes while leaving the aiming point in view. */
     private boolean visibleAim(Entity t){
+        t=part(t,targetPart);
         var me=mc.thePlayer;var b=t.boundingBox;
         double[] heights=aimHeight>=0?new double[]{aimHeight}:new double[]{.6,.9,.3};
         // A fresh eye each time: the trace moves its start to every block face it crosses.
         for(double h:heights)if(mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(t.posX,b.minY+(b.maxY-b.minY)*h,t.posZ))==null)return true;
         return false;
     }
-    private boolean aimAt(Entity t,double height){
-        var me=mc.thePlayer;var b=t.boundingBox;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
+    private boolean aimAt(Entity t,Entity point,double height){
+        var me=mc.thePlayer;var b=point.boundingBox;double ex=me.posX,ey=eyeY()-.1,ez=me.posZ,flight=0,angle=0,dx=0,dz=0;
         for(int pass=0;pass<2;pass++){ // second pass leads the target by where it will be when the shot arrives
-            dx=t.posX+(t.posX-t.prevPosX)*flight-ex;dz=t.posZ+(t.posZ-t.prevPosZ)*flight-ez;
-            double far=Math.sqrt(dx*dx+dz*dz),up=b.minY+(b.maxY-b.minY)*height+(t.posY-t.prevPosY)*flight-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
+            dx=point.posX+(point.posX-point.prevPosX)*flight-ex;dz=point.posZ+(point.posZ-point.prevPosZ)*flight-ez;
+            double far=Math.sqrt(dx*dx+dz*dz),up=b.minY+(b.maxY-b.minY)*height+(point.posY-point.prevPosY)*flight-ey,lo=-Math.PI/2+.01,hi=Math.PI/4;
             for(int i=0;i<18;i++){angle=(lo+hi)/2;double[] r=fly(angle,far);flight=r[1];if(r[0]<up)lo=angle;else hi=angle;}
         }
         me.rotationYaw=(float)(Math.toDegrees(Math.atan2(dz,dx))-90);me.rotationPitch=(float)-Math.toDegrees(angle);
@@ -691,9 +703,10 @@ final class FightJob implements Navigation.Job {
             Map<String,Object> t=null;
             if(target!=null){t=new LinkedHashMap<>();t.put("entityId",target.getEntityId());t.put("type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(target)));t.put("class",target.getClass().getName());
                 t.put("health",target instanceof EntityLivingBase l?l.getHealth():null);t.put("hostile",hostile.test(target));t.put("distance",Math.round(target.getDistanceToEntity(me)*10)/10.0);
+                if(targetPart>=0)t.put("partIndex",targetPart);
                 // Out of sight or with no clear shot: the first block on the straight line from your eye to where it would be aimed.
-                if(phase.equals("no_line_of_sight")||phase.equals("no_clear_shot")){var b=target.boundingBox;double h=aimHeight>=0?aimHeight:.6;
-                    var hit=mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(target.posX,b.minY+(b.maxY-b.minY)*h,target.posZ));
+                if(phase.equals("no_line_of_sight")||phase.equals("no_clear_shot")){var point=part(target,targetPart);var b=point.boundingBox;double h=aimHeight>=0?aimHeight:.6;
+                    var hit=mc.theWorld.rayTraceBlocks(Vec3.createVectorHelper(me.posX,eyeY(),me.posZ),Vec3.createVectorHelper(point.posX,b.minY+(b.maxY-b.minY)*h,point.posZ));
                     if(hit!=null)t.put("lineBlockedAt",Map.of("pos",List.of(hit.blockX,hit.blockY,hit.blockZ),"block",String.valueOf(net.minecraft.block.Block.blockRegistry.getNameForObject(mc.theWorld.getBlock(hit.blockX,hit.blockY,hit.blockZ))),"aimHeight",h));
                     if(inTheWay!=null&&phase.equals("no_clear_shot"))t.put("shotBlockedBy",Map.of("entityId",inTheWay.getEntityId(),"type",String.valueOf(net.minecraft.entity.EntityList.getEntityString(inTheWay)),"distance",Math.round(inTheWay.getDistanceToEntity(me)*10)/10.0));}}
             out.put("target",t);
