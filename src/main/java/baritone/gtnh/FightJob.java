@@ -49,7 +49,7 @@ final class FightJob implements Navigation.Job {
     private final Set<String> wentOff=new LinkedHashSet<>();
     private final Map<Integer,Object[]> lastNear=new HashMap<>();private final List<Object[]> vanished=new ArrayList<>();
     private final Map<Integer,double[]> still=new HashMap<>(); // each close mob: where it was, and for how many ticks it has not moved
-    private final Set<Integer> running=new HashSet<>(); // the still ones being run from
+    private final Set<Integer> running=new HashSet<>(); // the ones kept away from being run from (still, or just hit)
     private final Map<Integer,Double> toward=new HashMap<>(); // each monster's own going toward you, summed over about the last second and a half
     private final Map<Integer,Integer> passedUntil=new HashMap<>(); // swarm: the mobs it could not get at, passed over until that tick
     private Entity chased;private int chaseFrom,passedOver;private final List<String> taken=new ArrayList<>(); // each mob it took on, and why it counted as hostile
@@ -233,22 +233,24 @@ final class FightJob implements Navigation.Job {
         // The engine puts blocks in hand to build its way to the target: in reach, the weapon is back in hand a tick before a swing.
         if(inReach&&swingSlot>=0&&me.inventory.currentItem!=swingSlot){me.inventory.currentItem=swingSlot;mc.playerController.updateController();rest(Set.of());return;}
         Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;int since=ticks-lastAttack;
-        // One kept away from that stands still close by is getting ready: a sprint away from it onto somewhere to stand, until
-        // it is 8 blocks off or comes at you again. With nowhere to go, a swing when one is ready, where it is.
+        // One kept away from that stands still close by is getting ready, and one just hit may be: a sprint away from it onto
+        // somewhere to stand, until it is 8 blocks off. With nowhere to go, a swing when one is ready, where it is, and the
+        // sword raised between (blocking halves a blast too).
         Entity lit=hold?null:lit();
         if(lit!=null){
             phase="keeping_away";lastUseful=ticks;Entity part=nearest(lit);boolean hit=boxReach(part)<=REACH&&touchable(part)&&since>=interval;
             Float away=escape(lit);
-            if(away==null){aim(part);if(hit)strike(part,false);}
+            if(away==null){aim(part);if(hit)strike(part,false);else raise(keys);}
             else{me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());}
             rest(keys);return;
         }
-        // One kept away from is fought at arm's length: struck as it comes into reach, and backed away from while the next
-        // swing gathers, so it is not let within 3.5 blocks with no swing ready.
-        Entity kept=hold?null:close.stream().filter(e->keepAway.test(e)&&touchable(e)&&e.getDistanceToEntity(me)<3.5).findFirst().orElse(null);
+        // One kept away from is fought at arm's length: struck from where you stand as it comes into reach (a step in would
+        // bring it nearer than it chose to come, maybe within what sets it off), and backed away from while the next swing
+        // gathers, so it is not let in reach, nor within 3.5 blocks, with no swing ready.
+        Entity kept=hold?null:close.stream().filter(e->keepAway.test(e)&&touchable(e)&&(e.getDistanceToEntity(me)<3.5||reach(e)<=REACH)).findFirst().orElse(null);
         if(kept!=null){
             Entity part=nearest(kept);Float away=since>=interval&&boxReach(part)<=REACH?null:escape(kept);
-            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);if(!runningIn(keys)){strike(part,false);rest(keys);}return;}
+            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);strike(part,false);rest(keys);return;}
             if(away!=null){phase="arms_length";me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return;}
         }
         // A swarm passes over a mob it cannot get at (three seconds beside it out of reach, or five without a hit since it
@@ -268,11 +270,12 @@ final class FightJob implements Navigation.Job {
             if(Math.hypot(target.posX-me.posX,target.posZ-me.posZ)<=2.5&&me.canEntityBeSeen(body)){
                 if(++outOfReach>=60&&!swarm){finish("failed","cannot_reach_target: still "+round(far)+" blocks from your eye after 3 seconds approaching nearby (reach "+round(REACH)+")");return;}
             }else outOfReach=0;
-            if(closing.contains(target.getEntityId())&&comingAt(target)&&me.canEntityBeSeen(body)){
+            // One kept away from that is after you (coming, come at you, or hit) is let come, never walked to.
+            int id=target.getEntityId();boolean wary=keepAway.test(target)&&(comingAt(target)||cameAt.contains(id)||struck.contains(id));
+            if((wary||closing.contains(id)&&comingAt(target))&&me.canEntityBeSeen(body)){
                 // It is coming, by its own going this tick (the gap shrinks as you walk too, and one that has stopped short is
                 // walked to): met here, with the first swing at the edge of reach, rather than walked into with whatever comes with it.
-                phase="awaiting";aim(body);
-                var held=me.getHeldItem();if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){keys.add(game.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);}
+                phase="awaiting";aim(body);if(block)raise(keys);
                 rest(keys);return;
             }
             phase="pursuing";if(!building())eyes(body,false);engine.tickStart();return;
@@ -283,11 +286,7 @@ final class FightJob implements Navigation.Job {
         boolean falling=!me.onGround&&me.fallDistance>0&&!me.isInWater()&&!me.isOnLadder();
         boolean timed=crit&&!comingAt(target)&&!keepAway.test(target); // one coming at you is hit the moment it is in reach: the knockback is worth more than the crit
         if(!timed&&inReach&&since>=interval&&runningIn(keys))return;
-        var held=me.getHeldItem();
-        if(block&&held!=null&&held.getItemUseAction()==net.minecraft.item.EnumAction.block){
-            keys.add(game.keyBindUseItem.getKeyCode());
-            if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held); // a held key keeps the block up; it does not raise it
-        }
+        if(block)raise(keys);
         if(timed&&inReach&&me.onGround&&since>=interval-6)keys.add(game.keyBindJump.getKeyCode());
         if(inReach&&since>=interval&&(!timed||falling||since>=interval+10)){strike(body,falling);if(struckAside)aside++;}
         rest(keys);
@@ -303,8 +302,14 @@ final class FightJob implements Navigation.Job {
         if(runFrom<lastAttack)runFrom=ticks;
         keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return true;
     }
+    /** Raises what is in hand if its use is a block (a sword): a held key keeps the block up; it does not raise it. */
+    private void raise(Set<Integer> keys){
+        var me=mc.thePlayer;var held=me.getHeldItem();if(held==null||held.getItemUseAction()!=net.minecraft.item.EnumAction.block)return;
+        keys.add(mc.gameSettings.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);
+    }
     private void strike(Entity body,boolean falling){
         if(mc.thePlayer.isSprinting())runningHits++;
+        if(keepAway.test(body))running.add(body.getEntityId()); // hit, one kept away from is run from until it is 8 blocks off (lit)
         mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());passedUntil.remove(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
     }
     /** The engine does not tick here, so its keys and any block it was breaking are let go and ours are published. */
@@ -390,8 +395,6 @@ final class FightJob implements Navigation.Job {
      */
     private Entity swarmTarget(Entity current){
         var me=mc.thePlayer;
-        // One of a kind kept away from, within 6 blocks, first: met at arm's length before it is beside you.
-        Entity kept=pack().stream().filter(e->!passed(e)&&keepAway.test(e)&&e.getDistanceToEntity(me)<=6).findFirst().orElse(null);if(kept!=null)return kept;
         if(current!=null&&!dead(current)&&!passed(current)&&hostile.test(current)&&reach(current)<=REACH)return current;
         Entity inReach=hostiles(REACH+2).stream().filter(e->reach(e)<=REACH).findFirst().orElse(null); // one passed over that has come into reach is reachable after all
         if(inReach!=null)return inReach;
@@ -481,11 +484,12 @@ final class FightJob implements Navigation.Job {
         for(double[] b:blasts){double dx=b[0]-last[0],dy=b[1]-last[1],dz=b[2]-last[2];if(dx*dx+dy*dy+dz*dz<=9)return true;}
         return false;
     }
-    /** The nearest one kept away from that has stood still for 4 ticks within 4 blocks; once run from, until it is 8 blocks off or comes at you again. */
+    /** The nearest one kept away from that has stood still for 4 ticks within 4 blocks, or within 8 once it has come at you
+     *  or been hit (knocked back, it may stand there getting ready); once run from (or hit), until it is 8 blocks off. */
     private Entity lit(){
         var me=mc.thePlayer;
-        for(Entity e:close){double[] s=still.get(e.getEntityId());float d=e.getDistanceToEntity(me);
-            if(keepAway.test(e)&&(s!=null&&s[3]>=4&&d<=4||running.contains(e.getEntityId())&&d<=8&&!comingAt(e))){running.add(e.getEntityId());return e;}}
+        for(Entity e:close){int id=e.getEntityId();double[] s=still.get(id);float d=e.getDistanceToEntity(me);
+            if(keepAway.test(e)&&(s!=null&&s[3]>=4&&(d<=4||d<=8&&(cameAt.contains(id)||struck.contains(id)))||running.contains(id)&&d<=8)){running.add(id);return e;}}
         running.clear();return null;
     }
     /** It moved nearer you this tick by more than 0.03 blocks of its own going (a mob walks about 0.1 a tick). */
