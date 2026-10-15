@@ -14,14 +14,17 @@ import net.minecraft.world.World;
  * What a player does without stopping to think, whatever else is going on. Standing in what burns, they step out of it;
  * thrown by a hit toward a drop that would hurt, they hold the keys against the throw and crouch as they land. Ticked
  * before the job every client tick. It takes the controls from whatever holds them, and a job it takes them from ends
- * with its reason (stepped_out_of_fire, held_against_a_hit). A fight is left alone: it does both itself.
+ * with its reason (stepped_out_of_fire, held_against_a_hit). A fight is left alone: it does both itself. A step out
+ * still burning after STUCK ticks gives way to the model's own input or interaction.
  */
 final class Hazards {
     private static final Minecraft mc=Minecraft.getMinecraft();
     private static InputArbiter.Lease lease;
     private static int groundY=Integer.MIN_VALUE,thrown=-1,footing;
     private static double lastX,lastZ,tx,tz;
-    private static int sinceJolt=99;
+    private static int sinceJolt=99,burning;
+    /** Ticks a step out may run with the player still burning before it gives way to the model's own input or interaction. */
+    static final int STUCK=40;
     private Hazards(){}
     /** The keys to hold, and the heading to face for them (null: as you face). */
     record Hold(Set<Integer> keys,Float yaw){}
@@ -33,9 +36,14 @@ final class Hazards {
         // A hit's throw is 0.4 a tick across, seen here after its first tick's ground friction (0.546): a jolt of 0.15 or
         // more that the player's own jump does not explain, with the hurt (counter) within a tick or two of it.
         sinceJolt=Math.hypot(me.motionX-lastX,me.motionZ-lastZ)>=.15&&!me.movementInput.jump?0:sinceJolt+1;lastX=me.motionX;lastZ=me.motionZ;
-        if(fighting||explicitRecovery(ControlRegistry.controls().arbiter().current().label())){release();return;}
+        if(fighting){release();return;}
         Set<Integer> keys=null;Float yaw=null;String why=null;Hold hold;
-        if(hurtsToStand(me)&&(yaw=outOfFire(me))!=null){keys=stepKeys(me,yaw);why="stepped_out_of_fire";}
+        burning=hurtsToStand(me)||burning>0&&burns(mc.theWorld,me.boundingBox)?burning+1:0; // a jump off the burning floor does not restart it
+        if(burning>0&&(yaw=outOfFire(me))!=null){
+            // Still burning after two seconds of stepping (a lava pool it cannot climb from, dragon run 5): the model's own
+            // input or interaction, a bucket say, may be the way out, and is no longer taken over.
+            if(burning>STUCK&&explicitRecovery(ControlRegistry.controls().arbiter().current().label())){release();return;}
+            keys=stepKeys(me,yaw);why="stepped_out_of_fire";}
         else if((hold=counter(me,true))!=null){keys=hold.keys();yaw=hold.yaw();why="held_against_a_hit";}
         if(keys==null){release();return;}
         if(lease==null||!lease.isActive()){
@@ -45,7 +53,7 @@ final class Hazards {
         lease.setKeys(keys);
     }
     private static void release(){if(lease!=null){lease.close();lease=null;}}
-    /** An explicit input or interaction may be the way out when the automatic step cannot leave a pool. */
+    /** The model's own input or interaction, which a step out that is not getting the player out gives way to. */
     static boolean explicitRecovery(String owner){return "direct".equals(owner)||owner!=null&&owner.startsWith("interaction:");}
     /** The keys for a step out on that heading: forward, a jump when the first cell is a step up or you are in a pool, a run when fed enough to. */
     static Set<Integer> stepKeys(EntityPlayer me,float yaw){
