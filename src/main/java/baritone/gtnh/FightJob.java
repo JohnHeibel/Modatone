@@ -45,9 +45,9 @@ final class FightJob implements Navigation.Job {
     private int maxAttackers=2;private boolean attackersSet;
     // Who is after you: the server's word (Engaged, fresh while a fight runs), and whom this fight has hit.
     private final Set<Integer> engaged=new HashSet<>(),struck=new HashSet<>();private boolean informed;
-    // Kept away from: the kinds seen to go off beside you in this fight (gone with health left as you took a hit), and the caller's.
+    // Kept away from: the kinds seen to go off in this fight (gone with health left where the server just told of an explosion), and the caller's.
     private final Set<String> wentOff=new LinkedHashSet<>();
-    private final Map<Integer,Object[]> lastNear=new HashMap<>();private final List<Object[]> vanished=new ArrayList<>();private final float[] felt=new float[4];
+    private final Map<Integer,Object[]> lastNear=new HashMap<>();private final List<Object[]> vanished=new ArrayList<>();
     private final Map<Integer,double[]> still=new HashMap<>(); // each close mob: where it was, and for how many ticks it has not moved
     private final Set<Integer> running=new HashSet<>(); // the still ones being run from
     private final Map<Integer,Double> toward=new HashMap<>(); // each monster's own going toward you, summed over about the last second and a half
@@ -91,7 +91,7 @@ final class FightJob implements Navigation.Job {
 
 
     FightJob(Baritone engine,Map<String,Object> params){
-        this.engine=engine;
+        this.engine=engine;listen(engine);
         // Swarm: stand and hit whichever mob of the hostile rule is nearest in reach, at the weapon's full rate, however many come.
         swarm=bool(params,"swarm",false);hold=bool(params,"hold",false);crit=bool(params,"crit",!swarm);block=bool(params,"block",!swarm);
         if(swarm&&(params.containsKey("entityId")||params.containsKey("target")))throw new IllegalArgumentException("swarm fights whatever the hostile rule matches in reach: it takes no entityId or target");
@@ -112,7 +112,7 @@ final class FightJob implements Navigation.Job {
         maxHealthLoss=number(params,"maxHealthLoss",10,1,100);maxGrowth=integer(params,"maxGrowth",3,0,64);
         // Where on the target the crosshair rests, feet 0 to top 1. A swing lands wherever in reach it is aimed, so it looks low; a shot lands where it is aimed.
         aimHeight=params.containsKey("aimHeight")?number(params,"aimHeight",.6,0,1):-1;
-        var me=mc.thePlayer;ax=me.posX;ay=me.boundingBox.minY;az=me.posZ;startHealth=me.getHealth();Arrays.fill(felt,me.getHealth());refresh();close=close();
+        var me=mc.thePlayer;ax=me.posX;ay=me.boundingBox.minY;az=me.posZ;startHealth=me.getHealth();refresh();close=close();
         for(Object o:mc.theWorld.loadedEntityList)if(o instanceof Entity e&&e!=me&&!dead(e)&&e.getDistanceToEntity(me)<=32&&(monster.test(e)||hostile.test(e)))present.add(e.getEntityId());
         // A pack in sight when the fight was chosen is part of it: closing in is what it was always going to do. Counted once the server has said who is after you.
         if(params.containsKey("maxAttackers")){maxAttackers=integer(params,"maxAttackers",2,1,16);attackersSet=true;}
@@ -441,22 +441,45 @@ final class FightJob implements Navigation.Job {
         return monster.test(e)&&(toward.getOrDefault(id,0.0)>=2||(informed?!mc.thePlayer.canEntityBeSeen(e):ticks>20));
     }
     /**
-     * Each tick, of the mobs close by: how long each has stood still, and whether one went off beside you, gone from the
-     * world with health left within 5 blocks as you lost health. Its kind is kept away from after that (one that killed you too).
+     * Each tick, of the mobs about: how long each close one has stood still, and whether one went off, gone from the world
+     * with health left where the server has just told of an explosion. The server tells of each within 64 blocks, so a kind
+     * is learned whatever it is called, however far off it went and whether or not it hurt you; it is kept away from after.
      */
     private void watch(){
-        var me=mc.thePlayer;
-        for(var n:lastNear.entrySet()){Entity e=mc.theWorld.getEntityByID(n.getKey());if((e==null||e.isDead)&&(float)n.getValue()[1]>0)vanished.add(new Object[]{n.getValue()[0],ticks});}
-        vanished.removeIf(v->ticks-(int)v[1]>3);
-        felt[ticks%4]=me.getHealth();float most=0;for(float f:felt)most=Math.max(most,f);
-        if(most-me.getHealth()>0){for(Object[] v:vanished)wentOff.add((String)v[0]);vanished.clear();}
-        lastNear.clear();Map<Integer,double[]> now=new HashMap<>();
+        var me=mc.thePlayer;long now=mc.theWorld.getTotalWorldTime();
+        for(var n:lastNear.entrySet()){Entity e=mc.theWorld.getEntityByID(n.getKey());Object[] v=n.getValue();if((e==null||e.isDead)&&(float)v[1]>0)vanished.add(new Object[]{v[0],ticks,v[2]});}
+        vanished.removeIf(v->ticks-(int)v[1]>3); // the blast and the mob's removal come within a tick of each other
+        blasts.removeIf(b->b[3]>now||now-b[3]>BLAST_TICKS);
+        for(var it=vanished.iterator();it.hasNext();){Object[] v=it.next();if(wentOffAt((double[])v[2],blasts)){wentOff.add((String)v[0]);it.remove();}}
+        lastNear.clear();Map<Integer,double[]> moved=new HashMap<>();
+        for(Object o:mc.theWorld.loadedEntityList)
+            if(o instanceof EntityLivingBase l&&!(o instanceof EntityPlayer)&&l.getDistanceToEntity(me)<=64)lastNear.put(l.getEntityId(),new Object[]{type(l),l.getHealth(),new double[]{l.posX,l.posY,l.posZ}});
         for(Entity e:close){
-            if(e instanceof EntityLivingBase l&&e.getDistanceToEntity(me)<=5)lastNear.put(e.getEntityId(),new Object[]{type(e),l.getHealth()});
             double[] s=still.get(e.getEntityId());boolean same=s!=null&&Math.abs(s[0]-e.posX)<.02&&Math.abs(s[1]-e.posY)<.02&&Math.abs(s[2]-e.posZ)<.02;
-            now.put(e.getEntityId(),new double[]{e.posX,e.posY,e.posZ,same?s[3]+1:0});
+            moved.put(e.getEntityId(),new double[]{e.posX,e.posY,e.posZ,same?s[3]+1:0});
         }
-        still.clear();still.putAll(now);
+        still.clear();still.putAll(moved);
+    }
+    /** Explosions the server told of: centre x, y, z and the client world's time. Kept for a few ticks only; read on the client thread. */
+    private static final ArrayDeque<double[]> blasts=new ArrayDeque<>();
+    static final int BLAST_TICKS=10;
+    private static boolean listening;
+    /** Hears the server's explosion packet on the one Baritone instance's events; a fight reads what it heard. */
+    private static void listen(Baritone engine){
+        if(listening)return;listening=true;
+        engine.getGameEventHandler().registerEventListener(new baritone.api.event.listener.AbstractGameEventListener(){
+            @Override public void onReceivePacket(baritone.api.event.events.PacketEvent event){
+                var world=Minecraft.getMinecraft().theWorld;
+                if(event.getState()!=baritone.api.event.events.type.EventState.POST||world==null||!(event.getPacket() instanceof net.minecraft.network.play.server.S27PacketExplosion p))return;
+                blasts.addLast(new double[]{p.func_149148_f(),p.func_149143_g(),p.func_149145_h(),world.getTotalWorldTime()});
+                while(blasts.size()>16)blasts.removeFirst();
+            }
+        });
+    }
+    /** A mob last seen within 3 blocks of an explosion's centre went off there (a creeper's blast is centred on its feet; the client draws a mob up to a block behind). */
+    static boolean wentOffAt(double[] last,Collection<double[]> blasts){
+        for(double[] b:blasts){double dx=b[0]-last[0],dy=b[1]-last[1],dz=b[2]-last[2];if(dx*dx+dy*dy+dz*dz<=9)return true;}
+        return false;
     }
     /** The nearest one kept away from that has stood still for 4 ticks within 4 blocks; once run from, until it is 8 blocks off or comes at you again. */
     private Entity lit(){
