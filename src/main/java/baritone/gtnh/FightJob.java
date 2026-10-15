@@ -134,7 +134,7 @@ final class FightJob implements Navigation.Job {
         engine.getPathingBehavior().forceCancel();engine.snags.reset();initialCalculations=engine.getPathingBehavior().calculationsStarted();
         lease=ControlRegistry.controls().arbiter().acquire("baritone-fight",this::cancel);
         // For this job only, shown in the receipt and restored when it ends.
-        settings.allowBreak.value=bool(params,"allowBreak",false);settings.allowPlace.value=bool(params,"allowPlace",false);settings.followRadius.value=2;settings.followOffsetDistance.value=0d;
+        settings.allowBreak.value=bool(params,"allowBreak",false);settings.allowPlace.value=bool(params,"allowPlace",false);settings.followRadius.value=1;settings.followOffsetDistance.value=0d;
         for(var s:saved.keySet())jobSettings.put(s.getName(),s.value);
         engine.overrideProtection=false;engine.named=p->false;engine.positionAllowed=p->true;engine.explicitMiningTargets=()->s->false;
         engine.getInputOverrideHandler().attach(lease);
@@ -263,13 +263,11 @@ final class FightJob implements Navigation.Job {
         }
         boolean struckAside=inReach&&body!=nearest(target);
         if(!inReach&&!hold){
-            // Beside or under it and still out of reach: it is above or below where walking can take a swing. Wait for it
-            // (jumping when a jump would do), and say so after three seconds rather than walk in circles for ten.
+            // Close horizontally does not mean the ledge below or above is unreachable. Let FollowProcess try its path
+            // while the nearby watchdog runs, rather than holding still before navigation gets a turn.
             if(Math.hypot(target.posX-me.posX,target.posZ-me.posZ)<=2.5&&me.canEntityBeSeen(body)){
-                if(++outOfReach>=60&&!swarm){finish("failed","cannot_reach_target: it has stayed "+round(far)+" blocks from your eye, above or below where you can stand, for 3 seconds (reach "+round(REACH)+")");return;}
-                phase="out_of_reach";aim(body);if(far<=REACH+1.2&&me.onGround)keys.add(game.keyBindJump.getKeyCode());rest(keys);return;
-            }
-            outOfReach=0;
+                if(++outOfReach>=60&&!swarm){finish("failed","cannot_reach_target: still "+round(far)+" blocks from your eye after 3 seconds approaching nearby (reach "+round(REACH)+")");return;}
+            }else outOfReach=0;
             if(closing.contains(target.getEntityId())&&comingAt(target)&&me.canEntityBeSeen(body)){
                 // It is coming, by its own going this tick (the gap shrinks as you walk too, and one that has stopped short is
                 // walked to): met here, with the first swing at the edge of reach, rather than walked into with whatever comes with it.
