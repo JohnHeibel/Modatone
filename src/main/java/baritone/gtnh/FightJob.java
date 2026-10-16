@@ -58,6 +58,7 @@ final class FightJob implements Navigation.Job {
     private final Map<Integer,double[]> gaps=new HashMap<>(); // each hostile's distance, the last four times it was taken (every 10 ticks)
     private final Set<Integer> cameAt=new HashSet<>(),closing=new HashSet<>(); // who has come at you (struck aside), and who is coming now, half a block nearer than half a second ago (met, not walked to)
     private int aside;
+    private final Map<Integer,Integer> hitAt=new HashMap<>(); // the tick each mob was last struck
     private final double bailHealth,maxHealthLoss,startHealth,ax,ay,az,aimHeight;
     private final boolean leashGiven;
     private double leash;
@@ -106,7 +107,7 @@ final class FightJob implements Navigation.Job {
         keepAwayRule=params.containsKey("keepAway")?list(params.get("keepAway")).stream().map(o->object(o)).toList():List.of();
         var keep=keepAwayRule.stream().map(ReferenceFollowJob::selector).toList();keepAway=e->wentOff.contains(type(e))||keep.stream().anyMatch(r->r.test(e));
         if(named==null&&!hold&&!swarm)throw new IllegalArgumentException("fight needs entityId (from obs.entities or the clock's threats) or a target selector {entityId|uuid|type|name|class}, or hold:true to stand and hit whatever the hostile rule matches");
-        duration=integer(params,"durationTicks",600,1,6000);interval=integer(params,"intervalTicks",10,10,40);
+        duration=integer(params,"durationTicks",600,1,6000);interval=integer(params,"intervalTicks",0,0,40);
         leashGiven=params.containsKey("leash");leash=number(params,"leash",16,2,96);bailHealth=number(params,"bailHealth",8,0,40);
         // Going badly, before the bail line: this much health lost in this fight, or this many hostiles come close that were not there when it began.
         maxHealthLoss=number(params,"maxHealthLoss",10,1,100);maxGrowth=integer(params,"maxGrowth",3,0,64);
@@ -232,15 +233,15 @@ final class FightJob implements Navigation.Job {
         boolean inReach=far<=REACH&&touchable(body);
         // The engine puts blocks in hand to build its way to the target: in reach, the weapon is back in hand a tick before a swing.
         if(inReach&&swingSlot>=0&&me.inventory.currentItem!=swingSlot){me.inventory.currentItem=swingSlot;mc.playerController.updateController();rest(Set.of());return;}
-        Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;int since=ticks-lastAttack;
+        Set<Integer> keys=new LinkedHashSet<>();var game=mc.gameSettings;
         // One kept away from that stands still close by is getting ready, and one just hit may be: a sprint away from it onto
         // somewhere to stand, until it is 8 blocks off. With nowhere to go, a swing when one is ready, where it is, and the
         // sword raised between (blocking halves a blast too).
         Entity lit=hold?null:lit();
         if(lit!=null){
-            phase="keeping_away";lastUseful=ticks;Entity part=nearest(lit);boolean hit=boxReach(part)<=REACH&&touchable(part)&&since>=interval;
+            phase="keeping_away";lastUseful=ticks;Entity part=nearest(lit);boolean hit=boxReach(part)<=REACH&&touchable(part)&&hurtIn(lit)<=0;
             Float away=escape(lit);
-            if(away==null){aim(part);if(hit)strike(part,false);else raise(keys);}
+            if(away==null){aim(part);if(hit)strike(lit,part,false);else raise(keys);}
             else{me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());}
             rest(keys);return;
         }
@@ -249,8 +250,8 @@ final class FightJob implements Navigation.Job {
         // gathers, so it is not let in reach, nor within 3.5 blocks, with no swing ready.
         Entity kept=hold?null:close.stream().filter(e->keepAway.test(e)&&touchable(e)&&(e.getDistanceToEntity(me)<3.5||reach(e)<=REACH)).findFirst().orElse(null);
         if(kept!=null){
-            Entity part=nearest(kept);Float away=since>=interval&&boxReach(part)<=REACH?null:escape(kept);
-            if(away==null&&since>=interval&&boxReach(part)<=REACH){phase="arms_length";lastUseful=ticks;aim(part);strike(part,false);rest(keys);return;}
+            Entity part=nearest(kept);boolean ready=hurtIn(kept)<=0&&boxReach(part)<=REACH;Float away=ready?null:escape(kept);
+            if(ready){phase="arms_length";lastUseful=ticks;aim(part);strike(kept,part,false);rest(keys);return;}
             if(away!=null){phase="arms_length";me.rotationYaw=away;me.rotationPitch=0;keys.add(game.keyBindForward.getKeyCode());keys.add(game.keyBindSprint.getKeyCode());rest(keys);return;}
         }
         // A swarm passes over a mob it cannot get at (three seconds beside it out of reach, or five without a hit since it
@@ -258,12 +259,13 @@ final class FightJob implements Navigation.Job {
         if(swarm&&!inReach&&(outOfReach>=60||ticks-Math.max(chaseFrom,lastUseful)>=100)){
             passedUntil.put(target.getEntityId(),ticks+200);passedOver++;target=null;outOfReach=0;lastUseful=ticks;rest(Set.of());return;
         }
+        Entity other=null;
         if(!inReach&&!hold&&!swarm){
             // Another that has come at you, in reach while the target is not: struck where it stands, not walked past.
-            Entity other=hostiles(REACH+2).stream().filter(e->e!=target&&cameAt.contains(e.getEntityId())&&reach(e)<=REACH).findFirst().orElse(null);
+            other=hostiles(REACH+2).stream().filter(e->e!=target&&cameAt.contains(e.getEntityId())&&reach(e)<=REACH).findFirst().orElse(null);
             if(other!=null){body=nearest(other);inReach=true;}
         }
-        boolean struckAside=inReach&&body!=nearest(target);
+        Entity mob=other!=null?other:target;boolean struckAside=other!=null;
         if(!inReach&&!hold){
             // Close horizontally does not mean the ledge below or above is unreachable. Let FollowProcess try its path
             // while the nearby watchdog runs, rather than holding still before navigation gets a turn.
@@ -281,16 +283,34 @@ final class FightJob implements Navigation.Job {
             phase="pursuing";if(!building())eyes(body,false);engine.tickStart();return;
         }
         outOfReach=0;
+        int wait=hurtIn(mob);
+        // The swing has no cooldown, only each mob: while this one would shrug a hit off, another in reach that would not is
+        // struck meanwhile (in a swarm any hostile, else one that has come at you).
+        if(inReach&&wait>0){
+            Entity free=hostiles(REACH+2).stream().filter(e->e!=mob&&!keepAway.test(e)&&hurtIn(e)<=0&&reach(e)<=REACH&&touchable(nearest(e))&&(swarm||cameAt.contains(e.getEntityId()))).findFirst().orElse(null);
+            if(free!=null){Entity part=nearest(free);phase="striking_aside";aim(part);if(block)raise(keys);strike(free,part,false);aside++;rest(keys);return;}
+        }
         aim(body);
         phase=struckAside?"striking_aside":inReach?"striking":"holding";
         boolean falling=!me.onGround&&me.fallDistance>0&&!me.isInWater()&&!me.isOnLadder();
         boolean timed=crit&&!comingAt(target)&&!keepAway.test(target); // one coming at you is hit the moment it is in reach: the knockback is worth more than the crit
-        if(!timed&&inReach&&since>=interval&&runningIn(keys))return;
+        if(!timed&&inReach&&wait<=0&&runningIn(keys))return;
         if(block)raise(keys);
-        if(timed&&inReach&&me.onGround&&since>=interval-6)keys.add(game.keyBindJump.getKeyCode());
-        if(inReach&&since>=interval&&(!timed||falling||since>=interval+10)){strike(body,falling);if(struckAside)aside++;}
+        if(timed&&inReach&&me.onGround&&wait<=6)keys.add(game.keyBindJump.getKeyCode());
+        if(inReach&&wait<=0&&(!timed||falling||wait<=-10)){strike(mob,body,falling);if(struckAside)aside++;}
         rest(keys);
     }
+    /**
+     * Ticks until a swing at this mob would hurt it (0 or less: now). 1.7.10 puts no cooldown on the swing; a mob hurt
+     * shrugs off any hit no stronger than that one until half its maxHurtResistantTime has passed (10 ticks for most),
+     * read here from the mob itself, or intervalTicks if that is longer.
+     */
+    private int hurtIn(Entity mob){
+        Integer at=hitAt.get(mob.getEntityId());
+        return at==null?0:at+guard(interval,mob instanceof EntityLivingBase l?l.maxHurtResistantTime:0)-ticks;
+    }
+    /** Ticks after a hit before a mob takes the next alike: once its hurt timer (set to maxHurtResistantTime) is down to half. */
+    static int guard(int interval,int maxHurtResistantTime){return Math.max(interval,(maxHurtResistantTime+1)/2);}
     /**
      * A swing made running carries the run's knockback: the game adds a level for a sprinting hit, and the mob goes about
      * twice as far (some 6 blocks rather than 3). So first a tick or two of forward and sprint, the sword lowered; not when
@@ -307,9 +327,10 @@ final class FightJob implements Navigation.Job {
         var me=mc.thePlayer;var held=me.getHeldItem();if(held==null||held.getItemUseAction()!=net.minecraft.item.EnumAction.block)return;
         keys.add(mc.gameSettings.keyBindUseItem.getKeyCode());if(!me.isUsingItem())mc.playerController.sendUseItem(me,mc.theWorld,held);
     }
-    private void strike(Entity body,boolean falling){
+    private void strike(Entity mob,Entity body,boolean falling){
         if(mc.thePlayer.isSprinting())runningHits++;
-        if(keepAway.test(body))running.add(body.getEntityId()); // hit, one kept away from is run from until it is 8 blocks off (lit)
+        hitAt.put(mob.getEntityId(),ticks);
+        if(keepAway.test(mob))running.add(mob.getEntityId()); // hit, one kept away from is run from until it is 8 blocks off (lit)
         mc.playerController.attackEntity(mc.thePlayer,body);mc.thePlayer.swingItem();attacks++;struck.add(body.getEntityId());passedUntil.remove(body.getEntityId());if(target!=null)struck.add(target.getEntityId());if(falling)crits++;lastAttack=lastUseful=ticks;
     }
     /** The engine does not tick here, so its keys and any block it was breaking are let go and ours are published. */
