@@ -141,7 +141,7 @@ final class ClickRun {
             }
             case "moving"->{
                 nav.tick();if(!nav.done())return true;
-                var end=nav.status();nav=null;engine.editAllowed=p->true;
+                var end=nav.status();nav=null;engine.editAllowed=p->true;engine.explicitMiningTargets=()->s->false;
                 // A walk that left scaffold changed the blocks the picks are made in. One that dug only opened them further:
                 // a way that is gone for it fails at the click or on the way, and what is tried next is looked at afresh.
                 if(scaffold.size()!=walkScaffold)space=null;
@@ -254,16 +254,18 @@ final class ClickRun {
     }
     /**
      * A walk under the job's lease. It never places into or breaks a plan cell, finished or not, nor a cell that is
-     * out for access; outside the plan the job's terrain permissions decide. Taking scaffold away it places nothing
-     * and may break scaffold only, which is how it comes down from a pillar.
+     * out for access; outside the plan the job's terrain permissions decide. Taking scaffold away it breaks scaffold
+     * only, which is how it comes down from a pillar, and places where the job may: scaffold the source left high up is
+     * reached as it was put there, and what that places is scaffold too, taken away in its turn.
      */
     private void walk(List<BlockPos> goals) {
         job.lease.setKeys(Set.of());
         boolean clean=task.kind.equals("clean");var cells=plan.schematic;Set<BlockPos> mine=Set.copyOf(scaffold.keySet()),out=new HashSet<>();
         for(var row:restores)out.add(pos(row.get("pos")));
-        engine.editAllowed=clean?mine::contains:p->!cells.containsKey(p)&&!out.contains(p);
+        engine.editAllowed=p->!cells.containsKey(p)&&!out.contains(p);
+        if(clean)engine.explicitMiningTargets=()->s->mine.contains(new BlockPos(s.x,s.y,s.z));
         walkScaffold=scaffold.size();
-        nav=new ReferenceNavigationJob(engine,goals,Math.max(1,job.remaining),clean||job.allowBreak,!clean&&job.allowPlace,job.override,job.lease,null,0);enter("moving");
+        nav=new ReferenceNavigationJob(engine,goals,Math.max(1,job.remaining),!clean&&job.allowBreak,job.allowPlace,job.override,job.lease,null,0);enter("moving");
     }
     private void breakNext() {
         BlockPos cell=task.opening.poll();
@@ -568,7 +570,7 @@ final class ClickRun {
     /** Whatever is in flight is dropped: the walk, the selection, the search, the read. A use already pressed is journaled as made. */
     private void abort() {
         if(nav!=null&&!nav.done())nav.cancel("job_ended");
-        nav=null;engine.editAllowed=p->true;
+        nav=null;engine.editAllowed=p->true;engine.explicitMiningTargets=()->s->false;
         if(selection!=null){selection.close();selection=null;}
         if(future!=null){future.cancel(true);future=null;}
         capture=null;
