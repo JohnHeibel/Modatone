@@ -117,8 +117,8 @@ A build runs one way (`ReferenceConstructionProcess` around upstream
 | Edits outside the plan | Placing (scaffold, bridge, pillar) needs `allowPlace`; breaking needs `allowBreak`. Inside the plan neither is needed |
 | Wrong block in a plan cell | Dug out only with `replaceExisting` (or when a placement would replace it anyway, see Occupied cells). A cell that already matches is never dug through |
 | Materials | Nothing is checked up front. The job builds what it can; when nothing carried goes into any cell it is shown, it pauses as `missing_materials` with the list |
-| Attempts | Eight clicks the game took into one cell without the block being seen there |
-| Completion | Fresh comparison of every cell: block identity, metadata where the cell named one, and `verify.pickedItem` |
+| Attempts | Eight clicks the game took into one cell without the block being seen standing there for 20 ticks (`SETTLE`) |
+| Completion | Fresh comparison of every cell: block identity, metadata where the cell named one, and `verify.pickedItem`, holding for 20 ticks on end; and again once the closing has put back what it took |
 
 The cell limit is the game thread's budget. The job walks every plan cell once
 a tick (`survey()`: block and metadata of each, the step counts, the receipt's
@@ -178,7 +178,7 @@ stands. The reasons a build has of its own:
 | `occupied` | `pos` wants a block and holds a different one the job may not remove (`replaceExisting` false). At begin: before any input, with `occupied {count, first}`. Mid-run: once nothing else of the steps so far can be placed or cleared | failed at begin, else paused if the session did something |
 | `missing_materials` | Upstream has nothing it can do for the cells it is shown and `pos` is one no carried item places; `missing` lists up to 16 `{selector, needed, allocated, missing}` | paused |
 | `attempt_limit` | The eighth click the game took into `pos` still did not make the block appear | paused |
-| `mismatch` | The click about to be taken would make another variant at `pos` than the plan's (nothing is placed), or a block this job placed came out as another variant, or upstream holds every shown cell done and the plan's own comparison does not | paused |
+| `mismatch` | The click about to be taken would make another variant at `pos` than the plan's (nothing is placed), or a block this job placed came out as another variant, or upstream holds every shown cell done and the plan's own comparison does not, or the plan matched when the job ended and `pos` no longer does once the closing is over | paused |
 | `no_stance` | The stall watchdog fired and every cell still workable has no standing spot from which a face to place it against (or, for a block to remove, that block) is in view; `pos` is the first, `blockedBy` what the view of a block to remove ends on | paused if the session did something, else failed |
 | `no_route` | The watchdog fired and the last path search covered everything reachable without finding a place to work from | as above |
 | `stalled` | The watchdog fired (`stallTicks`, 200) and neither of the two above explains it, or upstream paused with material in hand | as above |
@@ -201,8 +201,11 @@ conflict. Preview counts conflicts with the job's own `replaceExisting`.
 
 Attempts. A cell is charged for a click only when the game took it
 (`onPlayerRightClick` returned true). The count lives for the session and is
-dropped when the cell is seen to match, so a resume or a later repair starts
-from none.
+dropped when the cell has matched for 20 ticks, so a resume or a later repair
+starts from none. The client shows a placed block at once and the server may
+take it away a few ticks later (sand or gravel with nothing under it falls):
+such a cell keeps its count and stops as `attempt_limit`, and a plan that
+matched and then did not is shown to upstream again instead of ending.
 
 Clicks (`ClickRun`, inside the same job). A cell with `click {face?, hit?,
 look?, sneak?}` (or only `expect`) is left out of upstream's schematic and
@@ -219,7 +222,7 @@ the step from the world and the journal's per-click results.
 | Order of click cells | `StepPlan.next`: what a click lands on stands before it, and a cell whose block would hide every way of making another goes after it. Complete at the cap |
 | Limits | 256 clicks a job (`StepPlan.CLICKS`); the click cells of one stage inside 200,000 copied blocks, else refused at begin as `clicks_too_spread` |
 | `expect` | Up to 4 `{method: obs.*, params?, pos?, path, equals \| contains \| changed: true}` a click, read through `Observations` after it (and before, for `changed`). Compared, never interpreted |
-| Walks | `ReferenceNavigationJob` under the job's lease with `Baritone.editAllowed` set: a walk neither breaks nor places in a plan cell or a cell that is out for access |
+| Walks | `ReferenceNavigationJob` under the job's lease with `Baritone.editAllowed` set: a walk neither breaks nor places in a plan cell or a cell that is out for access. A walk to take scaffold away breaks only the job's scaffold (`explicitMiningTargets`) and places where the job may, so it can climb to scaffold left high up; what it places is scaffold too |
 | Access | Only with `allowBreak`: up to 3 cells in the way of a click are taken out and the same blocks put back (`Access`). Never a tile entity, a fluid, a plan or protected cell, a cell within 4 of a tile entity, or a block that could not come back (none carried, and it does not drop itself) |
 | Scaffolds | Blocks the job placed outside the plan (builder, walks) are recorded by the `placed` consumer and taken away when the job ends |
 | Closing | A job that ends by itself or is paused with cells out or scaffolds standing runs on in state `closing` (budget 1,200 ticks and 100 a cell, at most 6,000) and then ends with the reason it had. What it could not put right is `accessLeft` / `scaffoldLeft {count, first}`, journaled, and a resume starts with it. A hard cancel (death, world change, supersede) does not close; the journal rows remain for the resume |

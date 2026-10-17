@@ -86,6 +86,8 @@ abstract class BulkJob implements Navigation.Job {
     boolean closing(String terminal,String why){return false;}
     final boolean closing(){return ending.open()&&!done();}
     final void closed(){finish("",Ending.DONE,true);}
+    /** A closing is over, done or cut short: whether the ending it kept still holds (ending.amend when not). */
+    void verdict(){}
     /** The reason a job ends for, as that kind of job says it: the shared deadline and watchdog have one wording for all. */
     String named(String why){return why;}
     final void finish(String terminal,String why){finish(terminal,why,false);}
@@ -93,6 +95,7 @@ abstract class BulkJob implements Navigation.Job {
         if(done())return;
         String named=ending.open()?why:named(why);
         if(ending.defer(terminal,named,()->!hard&&lease!=null&&lease.isActive()&&closing(terminal,why))){state="closing";reason=named;journal.save(status());return;}
+        if(ending.open())verdict();
         state=ending.terminal(terminal);reason=ending.reason(named);
         try{releaseProcess();}finally{if(lease!=null)lease.close();}
         journal.progress.put("lastTicks",ticks);

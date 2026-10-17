@@ -33,8 +33,18 @@ final class ReferenceConstructionProcess extends BulkJob {
     private Set<Map<String,Object>> kinds=Set.of();
     /** This tick: which loaded cells match. A new map every tick, never changed after: path searches read it. */
     private Map<BlockPos,Boolean> correct=Map.of();
-    /** Clicks the game took into a cell that has not yet been seen to match: this session's only, gone when it does. */
+    /** Clicks the game took into a cell that has not yet been seen to match a while: this session's only, gone when it has. */
     private final Map<BlockPos,Integer> attempts=new HashMap<>();
+    /**
+     * What the client shows placed the server may still take away: a block with nothing under it falls a few ticks later.
+     * A cell's clicks are forgotten once it has matched this long since its last one, and the job is built once the
+     * whole plan has.
+     */
+    static final int SETTLE=20;
+    private final Map<BlockPos,Integer> standing=new HashMap<>();
+    /** Since when every cell has matched (-1: not now), whether that stopped during this pass, and when a closing ran out of work. */
+    private int rightSince=-1,putBack=-1;
+    private boolean changed;
     /** The cell a stop is about, when one is to blame, and for missing_materials what is short. */
     private BlockPos blamed;
     private List<Map<String,Object>> missing=List.of();
@@ -193,8 +203,11 @@ final class ReferenceConstructionProcess extends BulkJob {
                 boolean present=plan.correct(cell);matches.put(p,present);
                 // A click cell is done once its click is settled too: read as expected, or found standing.
                 done=present&&(cell.click()==null||clicks.settled(ConstructionPlan.key(cell)));
-                // Seen to match: the clicks it took are forgotten, so a later repair of this cell starts from none.
-                if(present&&pending.remove(p)){attempts.remove(p);placedObserved.add(p);}
+                // Seen to match: once it still does SETTLE ticks on, the clicks it took are forgotten, so a later repair of
+                // this cell starts from none. One that falls keeps them, and runs into the limit.
+                if(present&&pending.remove(p)){standing.put(p,ticks);placedObserved.add(p);}
+                Integer since=standing.get(p);
+                if(since!=null&&(!present||ticks-since>=SETTLE)){standing.remove(p);if(present)attempts.remove(p);}
                 // A cell to be emptied may start empty, receive a scaffold and be cleared again: that removal counts too.
                 if(cell.clear()){if(!present)dirty.add(p);else if(dirty.remove(p))removedObserved.add(p);}
                 // What stands in a cell that wants a block: nothing or something a placement replaces (which the job may
@@ -218,6 +231,7 @@ final class ReferenceConstructionProcess extends BulkJob {
             if(at<=buildStep)open++;
         }
         correct=matches;soft=replaceable;left=wrong;leftFirst=some;
+        if(wrong>0){changed|=rightSince>=0;rightSince=-1;}else if(rightSince<0)rightSince=ticks;
         stepLeft=count;stepFirst=first;buildStep=BuildSteps.current(buildStep,count);
         work=buildStep;for(int i=buildStep-1;i>=0;i--)if(count[i]>0)work=i;
     }
@@ -578,6 +592,7 @@ final class ReferenceConstructionProcess extends BulkJob {
     private void startPass(){
         // A click's walk leaves the input handler released.
         if(!engine.getInputOverrideHandler().hasActiveLease())engine.getInputOverrideHandler().attach(lease);
+        changed=false;
         if(plan.cells.isEmpty()){started=true;passStep=buildStep;if(left==0)finish("succeeded",plan.uses.isEmpty()?"empty_selected_schematic":"schematic_verified");return;}
         int minX=plan.cells.stream().mapToInt(c->c.pos().getX()).min().orElseThrow(),minY=plan.cells.stream().mapToInt(c->c.pos().getY()).min().orElseThrow(),minZ=plan.cells.stream().mapToInt(c->c.pos().getZ()).min().orElseThrow();
         int width=plan.cells.stream().mapToInt(c->c.pos().getX()).max().orElseThrow()-minX+1,height=plan.cells.stream().mapToInt(c->c.pos().getY()).max().orElseThrow()-minY+1,length=plan.cells.stream().mapToInt(c->c.pos().getZ()).max().orElseThrow()-minZ+1;
@@ -668,6 +683,8 @@ final class ReferenceConstructionProcess extends BulkJob {
         engine.getPathingBehavior().forceCancel();engine.getInputOverrideHandler().release();passStep=-1;
         remaining=Math.max(remaining,clicks.budget());return true;
     }
+    /** A job that was built is built only if the plan still matches once what it put back is back. */
+    @Override void verdict(){if(ending.terminal("").equals("succeeded")&&left>0){blamed=next();ending.amend("paused","mismatch");}}
     /** The block the view of this cell ends on from the nearest pose within reach, when that is another block. */
     private BlockPos obstruction(BlockPos p){
         for(var pose:WorkAccess.buildingApproaches(world,p)){
@@ -680,7 +697,13 @@ final class ReferenceConstructionProcess extends BulkJob {
         return null;
     }
     @Override void step(){
-        if(closing()){survey();if(!clicks.tick())closed();return;}
+        if(closing()){
+            survey();if(clicks.tick()){putBack=-1;return;}
+            // Built still means the plan matches a while after the last scaffold came out: a block that stood on it falls.
+            if(putBack<0)putBack=ticks;
+            if(left==0&&ending.terminal("").equals("succeeded")&&ticks-putBack<SETTLE)return;
+            closed();return;
+        }
         if(!started)return;
         capture();var builder=engine.getBuilderProcess();
         if(clearanceEgress&&mc.thePlayer.onGround&&egressGoal.isInGoal(engine.getPlayerContext().playerFeet())){
@@ -720,7 +743,9 @@ final class ReferenceConstructionProcess extends BulkJob {
                 cleanupPhase=true;journal.progress.put("cleanupPhase",true);journal.progress.put("clearanceEgress",clearanceEgress);
                 engine.getPathingBehavior().forceCancel();configure();capture();startPass();journal.save(status());return;
             }
-            if(left>0){blamed=next();finish("paused","mismatch");return;}
+            // A plan that matched and then did not (a block fell) is built again; one that never did has a cell the source cannot make.
+            if(left>0){if(changed){engine.getPathingBehavior().forceCancel();startPass();return;}blamed=next();finish("paused","mismatch");return;}
+            if(ticks-rightSince<SETTLE)return;
             finish("succeeded","schematic_verified");return;
         }
         if(builder.isPaused()){

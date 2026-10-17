@@ -18,6 +18,14 @@ public class EndingTest {
         assertFalse(e.defer("cancelled","superseded",()->true));
         assertEquals("succeeded",e.terminal("cancelled"));assertEquals("schematic_verified",e.reason("superseded"));assertEquals("superseded",e.cut());
     }
+    @Test public void anEndingThatNoLongerHoldsAfterTheClosingIsReplacedAndWhatCutItStays() {
+        Ending e=new Ending();
+        e.amend("paused","mismatch");assertFalse("nothing to amend before an ending",e.open());
+        assertTrue(e.defer("succeeded","schematic_verified",()->true));
+        assertFalse(e.defer("paused","timeout",()->true));
+        e.amend("paused","mismatch");
+        assertEquals("paused",e.terminal("x"));assertEquals("mismatch",e.reason("x"));assertEquals("timeout",e.cut());
+    }
     @Test public void aJobWithNothingToPutBackOrNoControlsEndsAtOnce() {
         Ending e=new Ending();
         assertFalse(e.defer("cancelled","interrupted",()->false));assertFalse(e.open());

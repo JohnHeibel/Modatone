@@ -24,6 +24,8 @@ public final class Ending {
         if(!work.getAsBoolean())return false;
         this.terminal=terminal;this.reason=reason;return true;
     }
+    /** The first ending no longer holds once the closing is over (what it said was built is not, now): this one is reported instead. */
+    public void amend(String terminal,String reason){if(open()){this.terminal=terminal;this.reason=reason;}}
     public String terminal(String otherwise){return open()?terminal:otherwise;}
     public String reason(String otherwise){return open()?reason:otherwise;}
     public String cut(){return cut;}
