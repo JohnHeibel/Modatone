@@ -263,9 +263,10 @@ final class ClickRun {
         boolean clean=task.kind.equals("clean");var cells=plan.schematic;Set<BlockPos> mine=Set.copyOf(scaffold.keySet()),out=new HashSet<>();
         for(var row:restores)out.add(pos(row.get("pos")));
         engine.editAllowed=p->!cells.containsKey(p)&&!out.contains(p);
-        if(clean)engine.explicitMiningTargets=()->s->mine.contains(new BlockPos(s.x,s.y,s.z));
         walkScaffold=scaffold.size();
         nav=new ReferenceNavigationJob(engine,goals,Math.max(1,job.remaining),!clean&&job.allowBreak,job.allowPlace,job.override,job.lease,null,0);enter("moving");
+        // After the walk is made: it starts with no explicit targets. Its first search reads them on a later tick.
+        if(clean)engine.explicitMiningTargets=()->s->mine.contains(new BlockPos(s.x,s.y,s.z));
     }
     private void breakNext() {
         BlockPos cell=task.opening.poll();
