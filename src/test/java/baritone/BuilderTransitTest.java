@@ -92,6 +92,11 @@ public class BuilderTransitTest {
      * movementMayPlace together. The world is loaded `reach` blocks around the origin and nowhere else.
      */
     static CalculationContext builderContext(Terrain terrain,int ox,int oy,int oz,int reach,Predicate<BlockPos> shown,Predicate<BlockPos> mayBreak,Predicate<BlockPos> mayPlace) throws Exception {
+        return builderContext(terrain,ox,oy,oz,reach,shown,mayBreak,mayPlace,p->0);
+    }
+    /** And `scaffoldCost` as the wrapper's extra price of a throwaway block. */
+    static CalculationContext builderContext(Terrain terrain,int ox,int oy,int oz,int reach,Predicate<BlockPos> shown,Predicate<BlockPos> mayBreak,Predicate<BlockPos> mayPlace,
+            java.util.function.ToDoubleFunction<BlockPos> scaffoldCost) throws Exception {
         Baritone.settings().allowPlace.value=true;
         ItemStack[] hotbar=new ItemStack[9];hotbar[0]=new ItemStack(net.minecraft.init.Items.iron_pickaxe);
         var base=new CalculationContext(PLANNING_ONLY,true,new CalculationInputs(null,new BlockStateInterface(terrain,(x,z)->x>=ox+12-reach&&x<=ox+12+reach&&z>=oz+12-reach&&z<=oz+12+reach),
@@ -111,7 +116,7 @@ public class BuilderTransitTest {
         Map<String,Object> fields=new HashMap<>();
         fields.put("this$0",allocate(BuilderProcess.class));fields.put("placeable",List.of(new IBlockState(cobble(),0,null,0,0,0)));fields.put("schematic",schematic);
         fields.put("originX",ox);fields.put("originY",oy);fields.put("originZ",oz);fields.put("validatorSnapshot",validator);
-        fields.put("inventorySnapshot",List.of());fields.put("breakAllowed",mayBreak);fields.put("placementAllowed",mayPlace);
+        fields.put("inventorySnapshot",List.of());fields.put("breakAllowed",mayBreak);fields.put("placementAllowed",mayPlace);fields.put("scaffoldCostSnapshot",scaffoldCost);
         for(var e:fields.entrySet()){
             Field f=BuilderProcess.BuilderCalculationContext.class.getDeclaredField(e.getKey());f.setAccessible(true);f.set(context,e.getValue());
         }
@@ -152,5 +157,63 @@ public class BuilderTransitTest {
         // The search runs out of places to go (it does not time out): the job then stands still and the stall watchdog ends it.
         assertEquals("with the rim over the unfinished wall there is no way down",PathCalculationResult.Type.FAILURE,result.getType());
         assertFalse(result.getPath().isPresent());
+    }
+    /**
+     * tower_line (build_edges, 2026-10-17): a row of 9 cells 9 up between two stone posts. The walk to it pillared straight up
+     * under a row cell; the row, once built, covered the pillar's top and left the player 10 up with no way down. The wrapper
+     * prices a scaffold block right under a cell still to fill higher (PlacementGoalSupport.BURIED).
+     */
+    private static Set<BlockPos> row(){Set<BlockPos> out=new HashSet<>();for(int x=100;x<=108;x++)out.add(new BlockPos(x,84,100));return out;}
+    private static Terrain posts(){
+        Terrain t=new Terrain();
+        for(int y=75;y<=84;y++){t.cells.put(new BlockPos(99,y,100),cobble());t.cells.put(new BlockPos(109,y,100),cobble());}
+        return t;
+    }
+    /** The source goals of the two cells beside a post, the only ones with a face to place against. */
+    private static Goal ends(){
+        return new GoalComposite(new BuilderProcess.GoalAdjacent(new BlockPos(100,84,100),new BlockPos(99,84,100),false),
+            new BuilderProcess.GoalAdjacent(new BlockPos(108,84,100),new BlockPos(109,84,100),false));
+    }
+    private static List<BlockPos> placed(PathCalculationResult result,CalculationContext context){
+        List<BlockPos> out=new ArrayList<>();
+        for(var m:result.getPath().orElseThrow().movements())out.addAll(((Movement)m).toPlace(context.bsi));
+        return out;
+    }
+    /** A 9-high pillar costs more than walking to the edge of the loaded square, which would end the search there. */
+    private static AStarPathFinder search(int x,int y,int z,CalculationContext context){
+        Baritone.settings().pathingMaxChunkBorderFetch.value=Integer.MAX_VALUE;
+        return new AStarPathFinder(x,y,z,ends(),new Favoring(null,context),context);
+    }
+    private static java.util.function.ToDoubleFunction<BlockPos> buried(Set<BlockPos> plan){
+        return p->plan.contains(new BlockPos(p.getX(),p.getY()+1,p.getZ()))?baritone.gtnh.pathing.PlacementGoalSupport.BURIED:0;
+    }
+    @Test public void aPillarGoesBesideTheRowItIsForWhereItCan() throws Exception {
+        var plan=row();var terrain=posts();
+        var context=builderContext(terrain,96,75,88,28,plan::contains,p->true,p->true,buried(plan));
+        var finder=search(104,75,96,context);var result=finder.calculate(4000,8000);
+        assertEquals(finder.searchStats().toString(),PathCalculationResult.Type.SUCCESS_TO_GOAL,result.getType());
+        var under=placed(result,context).stream().filter(p->plan.contains(new BlockPos(p.getX(),p.getY()+1,p.getZ()))).toList();
+        assertFalse(placed(result,context).isEmpty());
+        assertEquals("no scaffold right under a row cell: "+placed(result,context),List.of(),under);
+    }
+    @Test public void unpricedTheWalkPillarsUnderTheRow() throws Exception {
+        // The control: without the price the same walk does what tower_line did.
+        var plan=row();var terrain=posts();
+        var context=builderContext(terrain,96,75,88,28,plan::contains,p->true,p->true,p->0);
+        var finder=search(104,75,96,context);var result=finder.calculate(4000,8000);
+        assertEquals(finder.searchStats().toString(),PathCalculationResult.Type.SUCCESS_TO_GOAL,result.getType());
+        assertTrue(placed(result,context).toString(),placed(result,context).stream().anyMatch(p->plan.contains(new BlockPos(p.getX(),p.getY()+1,p.getZ()))));
+    }
+    @Test public void underTheRowIsStillTakenWhenNothingElseIsLeft() throws Exception {
+        // The row's slot walled in on both sides and beyond the posts, twelve high: every column but the ones under the row
+        // is stone, so the walk must pillar under a cell it will build. Pricier, not forbidden.
+        var plan=row();var terrain=posts();
+        for(int x=90;x<=118;x++)for(int y=75;y<=86;y++){terrain.cells.put(new BlockPos(x,y,99),cobble());terrain.cells.put(new BlockPos(x,y,101),cobble());}
+        for(int y=75;y<=86;y++){terrain.cells.put(new BlockPos(98,y,100),cobble());terrain.cells.put(new BlockPos(110,y,100),cobble());}
+        for(int y=85;y<=86;y++){terrain.cells.put(new BlockPos(99,y,100),cobble());terrain.cells.put(new BlockPos(109,y,100),cobble());}
+        var context=builderContext(terrain,96,75,88,28,plan::contains,p->false,p->true,buried(plan));
+        var finder=search(104,75,100,context);var result=finder.calculate(4000,8000);
+        assertEquals(finder.searchStats().toString(),PathCalculationResult.Type.SUCCESS_TO_GOAL,result.getType());
+        assertTrue(placed(result,context).toString(),placed(result,context).stream().anyMatch(p->plan.contains(new BlockPos(p.getX(),p.getY()+1,p.getZ()))));
     }
 }

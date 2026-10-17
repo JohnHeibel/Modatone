@@ -79,6 +79,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     public java.util.function.Predicate<BlockPos> mayBreak=pos->true;
     public java.util.function.Predicate<BlockPos> mayPlace=pos->true;
     public java.util.function.Predicate<BlockPos> movementMayPlace=pos->true;
+    /** What a walk pays on top of the usual for a throwaway block it would place here (scaffold): a preference, never a ban. */
+    public java.util.function.ToDoubleFunction<BlockPos> scaffoldCost=pos->0;
     public java.util.function.BiPredicate<IBlockState,IBlockState> stateComparison;
     public java.util.function.BiFunction<BlockPos,Goal,Goal> placementGoalAdapter=(pos,goal)->goal;
     public java.util.function.BiFunction<BlockPos,Goal,Goal> breakGoalAdapter=(pos,goal)->goal;
@@ -88,7 +90,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
     /** Cells above the feet that are placed although nothing is over them. */
     public java.util.function.Predicate<BlockPos> placeFromBelow=pos->false;
     public java.util.function.BiPredicate<IBlockState,IBlockState> approximateMaterialMatches;
-    public void resetAdapters(){stateValidator=(current,desired,itemVerify)->true;beforePlace=pos->{};mayBreak=pos->true;mayPlace=pos->true;movementMayPlace=pos->true;stateComparison=null;placementGoalAdapter=(p,g)->g;breakGoalAdapter=(p,g)->g;accessGoal=()->null;breakAim=pos->Optional.empty();placeFromBelow=pos->false;approximateMaterialMatches=null;}
+    public void resetAdapters(){stateValidator=(current,desired,itemVerify)->true;beforePlace=pos->{};mayBreak=pos->true;mayPlace=pos->true;movementMayPlace=pos->true;scaffoldCost=pos->0;stateComparison=null;placementGoalAdapter=(p,g)->g;breakGoalAdapter=(p,g)->g;accessGoal=()->null;breakAim=pos->Optional.empty();placeFromBelow=pos->false;approximateMaterialMatches=null;}
     public int repeats(){return numRepeats;}
     public Vec3i origin(){return origin;}
     public Set<BetterBlockPos> incorrectPositions(){return incorrectPositions==null?Set.of():Set.copyOf(incorrectPositions);}
@@ -1061,6 +1063,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
         private final List<IBlockState> inventorySnapshot;
         private final java.util.function.Predicate<BlockPos> breakAllowed;
         private final java.util.function.Predicate<BlockPos> placementAllowed;
+        private final java.util.function.ToDoubleFunction<BlockPos> scaffoldCostSnapshot;
         private final java.util.function.BiPredicate<IBlockState,IBlockState> comparisonSnapshot;
         private final java.util.function.BiPredicate<IBlockState,IBlockState> materialMatchSnapshot;
 
@@ -1076,6 +1079,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
             this.breakAllowed=mayBreak;
             var allowed=mayPlace;var movementAllowed=movementMayPlace;
             this.placementAllowed=pos->allowed.test(pos)&&movementAllowed.test(pos);
+            this.scaffoldCostSnapshot=scaffoldCost;
             this.comparisonSnapshot=stateComparison;
             this.materialMatchSnapshot=approximateMaterialMatches;
 
@@ -1093,7 +1097,8 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
 
         @Override
         public double costOfPlacingAt(int x, int y, int z, IBlockState current) {
-            if(!placementAllowed.test(new BlockPos(x,y,z)))return COST_INF;
+            BlockPos at=new BlockPos(x,y,z);
+            if(!placementAllowed.test(at))return COST_INF;
             if (isPossiblyProtected(x, y, z) || !worldBorder.canPlaceAt(x, z)) { // make calculation fail properly if we can't build
                 return COST_INF;
             }
@@ -1103,7 +1108,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 if (sch.getBlock() == Blocks.AIR) {
                     // we want this to be air, but they're asking if they can place here
                     // this won't be a schematic block, this will be a throwaway
-                    return hasThrowaway ? placeBlockCost * 2 : COST_INF; // authorized scaffolding only
+                    return hasThrowaway ? placeBlockCost * 2 + scaffoldCostSnapshot.applyAsDouble(at) : COST_INF; // authorized scaffolding only
                 }
                 if (placeable.stream().anyMatch(p->valid(p,sch,true,validatorSnapshot,comparisonSnapshot,materialMatchSnapshot))) {
                     return 0; // thats right we gonna make it FREE to place a block where it should go in a structure
@@ -1119,7 +1124,7 @@ public final class BuilderProcess extends BaritoneProcessHelper implements IBuil
                 return placeBlockCost * 3;
             } else {
                 if (hasThrowaway) {
-                    return placeBlockCost;
+                    return placeBlockCost + scaffoldCostSnapshot.applyAsDouble(at);
                 } else {
                     return COST_INF;
                 }

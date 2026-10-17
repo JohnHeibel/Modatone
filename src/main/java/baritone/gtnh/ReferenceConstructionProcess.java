@@ -330,6 +330,9 @@ final class ReferenceConstructionProcess extends BulkJob {
         builder.mayPlace=p->allowPlace||cells.containsKey(new BlockPos(p.getX(),p.getY(),p.getZ()));
         // Nor may a walk bridge or pillar with anything, plan block or throwaway, into a cell whose step has not come.
         builder.movementMayPlace=p->order.visible(new BlockPos(p.getX(),p.getY(),p.getZ()),shown);
+        // Scaffold right under a cell still to fill is buried by it, and the player who stood on it is left up there with no way
+        // down: the walk pays more for such a block, so it pillars beside the cell where it can, and under it where nothing else is left.
+        builder.scaffoldCost=p->{Cell above=cells.get(new BlockPos(p.getX(),p.getY()+1,p.getZ()));return above!=null&&!above.clear()&&!verified.getOrDefault(above.pos(),false)?PlacementGoalSupport.BURIED:0;};
         // A cell that named no meta is satisfied by any variant of its block.
         builder.stateComparison=(actual,wanted)->{
             if(actual.getBlock()!=wanted.getBlock())return false;
@@ -434,9 +437,22 @@ final class ReferenceConstructionProcess extends BulkJob {
         // Existing work poses supplement the source goal, never replace it: removing a future goal would keep A*
         // from constructing its own support (notably a pillar), even though a distant existing pose is legal.
         // A cell filled from outside has only those spots: the source goal is also the spot inside it.
-        Goal[] spots=legal.stream().map(p->new baritone.process.BuilderProcess.GoalPlace(p.down())).toArray(Goal[]::new);
+        Goal[] spots=legal.stream().map(p->new Spot(p,cell.pos().getY())).toArray(Goal[]::new);
         Goal adapted=fromOutside.contains(cell.pos())?new GoalComposite(spots):adjacent?goal:new GoalComposite(goal,new GoalComposite(spots));
         placementGoals.put(cell,adapted);return adapted;
+    }
+    /**
+     * A spot to stand on to place a cell, ranked as the source ranks the cell itself (lower cells first), not by how low the
+     * player would stand: ranked by the stance, a floor spot under a roof cell came 300 ahead of every spot on the wall
+     * top, and the player dropped into a room with no way back up to the wall top it had still to build.
+     */
+    static final class Spot extends GoalBlock {
+        final int cellY;
+        Spot(BlockPos feet,int cellY){super(feet.getX(),feet.getY(),feet.getZ());this.cellY=cellY;}
+        @Override public double heuristic(int x,int y,int z){return cellY*100+super.heuristic(x,y,z);}
+        @Override public boolean equals(Object o){return super.equals(o)&&((Spot)o).cellY==cellY;}
+        @Override public int hashCode(){return super.hashCode()*31+cellY;}
+        @Override public String toString(){return "Spot{"+x+","+y+","+z+" for y="+cellY+"}";}
     }
     /** The poses near the player, captured again once it has walked off or a second has passed. */
     private WorkAccess.Stands stands(BlockPos feet){
@@ -477,7 +493,9 @@ final class ReferenceConstructionProcess extends BulkJob {
     }
     /** The feet positions, among these poses, from which a face to place this cell against is in view. */
     private void offer(BlockPos cell,Set<BlockPos> spots){
-        if(!spots.isEmpty()&&!spots.equals(offered.put(cell,spots)))offeredSearches=engine.getPathingBehavior().calculationsStarted();
+        // A goal handed out with no spots forgets the ones before it: a search for it that finds no way says nothing of them.
+        if(spots.isEmpty()){offered.remove(cell);return;}
+        if(!spots.equals(offered.put(cell,spots)))offeredSearches=engine.getPathingBehavior().calculationsStarted();
     }
     private Goal[] egress(BlockPos at,boolean covered,int up){
         Set<BlockPos> no=noWay.getOrDefault(at,Set.of());
@@ -487,18 +505,28 @@ final class ReferenceConstructionProcess extends BulkJob {
     private Set<BlockPos> vantages(Cell cell,int slot,List<WorkAccess.Pose> poses,BlockPos currentFeet){return vantages(cell,slot,poses,currentFeet,noWay.getOrDefault(cell.pos(),Set.of()));}
     /** no: spots that do not count (those the search found no way to; none when the question is whether a spot exists at all). */
     private Set<BlockPos> vantages(Cell cell,int slot,List<WorkAccess.Pose> poses,BlockPos currentFeet,Set<BlockPos> no){
-        boolean below=fromBelow.contains(cell.pos());
+        boolean below=fromBelow.contains(cell.pos());int y=cell.pos().getY();
         // Asked per pose only for a cell that waits for the player to be outside.
         java.util.function.Predicate<BlockPos> shuts=fromOutside.contains(cell.pos())?f->BuildSteps.shut(cell.pos(),f,this::open,boxLo,boxHi):f->false;
-        Set<BlockPos> legal=vantages(cell,slot,poses,currentFeet,below);legal.removeAll(no);legal.removeIf(shuts);
-        // The source builder fills a cell from level with it or above, and from below only under a ceiling. Where no such
-        // spot exists (the neighbours it would stand on are filled, there is no headroom, or there is no way to it), the
-        // cell is filled from below.
-        if(legal.isEmpty()&&!below){legal=vantages(cell,slot,poses,currentFeet,true);legal.removeAll(no);legal.removeIf(shuts);if(!legal.isEmpty())fromBelow.add(cell.pos());}
-        return legal;
+        Map<BlockPos,BlockPos> legal=vantages(cell,slot,poses,currentFeet,below);legal.keySet().removeAll(no);legal.keySet().removeIf(shuts);
+        // The source builder fills a cell from level with it or above, and from below only under a ceiling. A spot level or
+        // above counts only if the player can walk to it from where it stands: the top of a roof is no spot to a player in
+        // the room under it. Where there is none (the neighbours it would stand on are filled or not built yet, there is no
+        // headroom, or no way up), the cell is filled from below. Asked again each time, so a cell that had no spot up there
+        // when the walls were finished gets one as the roof beside it is built.
+        Set<BlockPos> walk=stands!=null&&stands.within(currentFeet,DRIFT)?stands.walkable(currentFeet):Set.of();
+        if(legal.entrySet().stream().anyMatch(e->e.getKey().getY()>=y&&walk.contains(e.getValue()))){
+            fromBelow.remove(cell.pos());legal.keySet().removeIf(f->f.getY()<y);return new HashSet<>(legal.keySet());
+        }
+        if(!below&&world.getBlock(cell.pos().getX(),y+1,cell.pos().getZ())==net.minecraft.init.Blocks.air){legal=vantages(cell,slot,poses,currentFeet,true);legal.keySet().removeAll(no);legal.keySet().removeIf(shuts);}
+        // The spots up there stay goals: the search may know a way the walk above did not try. A mark is taken back only by
+        // a spot up there to walk to, never by finding nothing for a moment (sand still falling through the cell).
+        if(legal.keySet().stream().anyMatch(f->f.getY()<y))fromBelow.add(cell.pos());
+        return new HashSet<>(legal.keySet());
     }
-    private Set<BlockPos> vantages(Cell cell,int slot,List<WorkAccess.Pose> poses,BlockPos currentFeet,boolean below){
-        var builder=engine.getBuilderProcess();Set<BlockPos> legal=new HashSet<>();
+    /** The spots a face for this cell is in view from, each with the pose it was found from. */
+    private Map<BlockPos,BlockPos> vantages(Cell cell,int slot,List<WorkAccess.Pose> poses,BlockPos currentFeet,boolean below){
+        var builder=engine.getBuilderProcess();Map<BlockPos,BlockPos> legal=new HashMap<>();
         for(var pose:poses){
             var sourceFeet=baritone.compat.NavigationCoordinates.feet(pose.feet().getX()+.5,pose.standingY(),pose.feet().getZ()+.5,
                 p->world.getBlock(p.getX(),p.getY(),p.getZ()) instanceof net.minecraft.block.BlockSlab);
@@ -513,7 +541,7 @@ final class ReferenceConstructionProcess extends BulkJob {
             // Any other cell is promised from its centre, where the player will not be standing. A view that exists
             // only from the exact centre (a ray through the seam of two blocks meeting at an edge) is no stance:
             // on arrival the real position refutes it and the next such cell becomes the goal, back and forth.
-            if(here?probe.at(mc.thePlayer.posX,mc.thePlayer.posZ):PlacementGoalSupport.steady(pose.feet().getX()+.5,pose.feet().getZ()+.5,probe))legal.add(sourceFeet);
+            if(here?probe.at(mc.thePlayer.posX,mc.thePlayer.posZ):PlacementGoalSupport.steady(pose.feet().getX()+.5,pose.feet().getZ()+.5,probe))legal.put(sourceFeet,pose.feet());
         }
         return legal;
     }

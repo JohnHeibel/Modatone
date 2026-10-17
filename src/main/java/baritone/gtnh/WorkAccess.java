@@ -138,6 +138,15 @@ final class WorkAccess {
             }
             out.sort(Comparator.comparingDouble(p->distance(p.feet())));return out;
         }
+        private BlockPos walkFrom;private Set<BlockPos> walk;
+        /** The poses here the player can walk to from these feet (PlacementGoalSupport.walkable), kept for the last feet asked. */
+        Set<BlockPos> walkable(BlockPos from){
+            if(!from.equals(walkFrom)){
+                Map<BlockPos,Double> at=new HashMap<>();for(Pose pose:poses)at.put(pose.feet(),pose.standingY());
+                walk=PlacementGoalSupport.walkable(at,from,(c,low,high)->ForgeSnapshot.liveClear(world,c.getX()+.5,low,c.getZ()+.5,high));walkFrom=from;
+            }
+            return walk;
+        }
     }
     static Map<String,Object> observed(World world,BlockPos p) {
         if(!ForgeSnapshot.loaded(world,p.getX(),p.getY(),p.getZ()))return Map.of("pos",point(p),"loaded",false);

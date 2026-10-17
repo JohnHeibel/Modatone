@@ -2,6 +2,7 @@
 package baritone.gtnh.pathing;
 
 import baritone.compat.BlockPos;
+import java.util.*;
 
 /** Stances must be actionable by the source builder's placement scan. */
 public final class PlacementGoalSupport {
@@ -31,5 +32,35 @@ public final class PlacementGoalSupport {
      * level with the eye at most one of the two nudges stays in the plane. */
     public static boolean steady(double x,double z,Probe probe) {
         return probe.at(x,z)&&probe.at(x+NUDGE,z)&&probe.at(x,z+NUDGE);
+    }
+    /** What a walk pays on top of the usual for a scaffold block right under a cell still to fill: about four blocks' placing. */
+    public static final double BURIED=80;
+    /** Whether a column is open for the body between two heights. */
+    @FunctionalInterface public interface Room {boolean clear(BlockPos column,double low,double high);}
+    /** What a walk on foot alone takes between standing spots side by side: a jump up, or down at most the walk's fall limit. */
+    public static final double RISE=1.25,DROP=3,BODY=1.8;
+    /**
+     * The standing spots (feet to standing height) the player can walk to from `from` without placing, breaking, parkour,
+     * ladders or water. Something missed here is a spot the path search may still find a way to, so it only decides which
+     * way is tried first, never what is possible.
+     */
+    public static Set<BlockPos> walkable(Map<BlockPos,Double> stands,BlockPos from,Room room) {
+        Set<BlockPos> out=new HashSet<>();Deque<BlockPos> todo=new ArrayDeque<>();
+        for(BlockPos start:List.of(from,from.down(),from.up())){
+            Double y=stands.get(start);
+            if(y!=null&&room.clear(start,y,y+BODY)){out.add(start);todo.add(start);break;}
+        }
+        int[][] sides={{1,0},{-1,0},{0,1},{0,-1}};
+        while(!todo.isEmpty()){
+            BlockPos at=todo.poll();double y=stands.get(at);
+            for(int[] side:sides)for(int dy=2;dy>=-4;dy--){
+                BlockPos to=new BlockPos(at.getX()+side[0],at.getY()+dy,at.getZ()+side[1]);Double toY=stands.get(to);
+                if(toY==null||out.contains(to)||toY-y>RISE||y-toY>DROP)continue;
+                // The body passes the target column from the higher of the two heights, and jumps clear of the spot it leaves.
+                if(!room.clear(to,toY,Math.max(y,toY)+BODY)||toY>y&&!room.clear(at,y,toY+BODY))continue;
+                out.add(to);todo.add(to);
+            }
+        }
+        return out;
     }
 }
